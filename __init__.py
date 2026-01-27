@@ -1,6 +1,6 @@
 """
-KiCad SOIC Footprint Generator Plugin
-用于从数据手册自动生成SOIC封装的插件
+KiCad Footprint Generator Plugin
+用于从数据手册自动生成封装的插件
 """
 
 import pcbnew
@@ -9,18 +9,18 @@ import os
 import json
 import requests
 
-class SOICFootprintGeneratorPlugin(pcbnew.ActionPlugin):
+class FootprintGeneratorPlugin(pcbnew.ActionPlugin):
     """
-    KiCad SOIC封装生成插件主类
+    KiCad 封装生成插件主类
     """
 
     def defaults(self):
         """
         插件的基本信息
         """
-        self.name = "SOIC Footprint Generator"
+        self.name = "Footprint Generator"
         self.category = "Manufacturing"
-        self.description = "从数据手册自动生成SOIC封装"
+        self.description = "从数据手册自动生成封装"
         self.show_toolbar_button = True
         self.icon_file_name = os.path.join(os.path.dirname(__file__), "icon.png")
 
@@ -28,18 +28,18 @@ class SOICFootprintGeneratorPlugin(pcbnew.ActionPlugin):
         """
         插件运行入口
         """
-        dialog = SOICGeneratorDialog(None)
+        dialog = GeneratorDialog(None)
         dialog.ShowModal()
         dialog.Destroy()
 
 
-class SOICGeneratorDialog(wx.Dialog):
+class GeneratorDialog(wx.Dialog):
     """
-    SOIC封装生成器对话框
+    AI封装生成器对话框
     """
 
     def __init__(self, parent):
-        wx.Dialog.__init__(self, parent, title="SOIC封装生成器", size=(1400, 900))
+        wx.Dialog.__init__(self, parent, title="AI封装生成器", size=(1400, 900))
 
         self.api_base_url = "http://localhost:8080/api/packages"
         self.datasheet_uuid = None
@@ -1320,4 +1320,4 @@ class AddParameterDialog(wx.Dialog):
         self.Centre()
 
 # 注册插件
-SOICFootprintGeneratorPlugin().register()
+FootprintGeneratorPlugin().register()

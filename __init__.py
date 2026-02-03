@@ -2,6 +2,7 @@
 KiCad Footprint Generator Plugin
 用于从数据手册自动生成封装的插件
 """
+from urllib.parse import urlencode
 
 import pcbnew
 import wx
@@ -1147,7 +1148,7 @@ class GeneratorDialog(wx.Dialog):
             package_data = self.collect_package_data(idx)
             if package_data:
                 # 保存到API
-                if self.save_package_to_api(package_data, package.get('packageId')):
+                if self.save_package_to_api(package_data):
                     success_count += 1
                     # 生成封装
                     self.generate_kicad_footprint(package_data)
@@ -1179,7 +1180,9 @@ class GeneratorDialog(wx.Dialog):
                 if key:  # 只添加有名称的参数
                     params[key] = value
 
+            package_id = self.package_list[index].get('packageId')
             return {
+                'packageId': package_id,
                 'packageType': package_type,
                 'packageName': package_name,
                 'pageNumbers': page_numbers,
@@ -1189,17 +1192,19 @@ class GeneratorDialog(wx.Dialog):
             print(f"收集封装数据失败: {str(e)}")
             return None
 
-    def save_package_to_api(self, package_data, package_id):
+    def save_package_to_api(self, package_data):
         """
         保存封装数据到API
         """
         try:
-            url = f"{self.api_base_url}/{package_id}"
+            params = {
+                'packageName': package_data['packageName'],
+                'pageNumbers': package_data['pageNumbers']
+            }
+            package_id =  package_data['packageId']
+            url = f"{self.api_base_url}/{package_id}?{urlencode(params)}"
 
             payload = {
-                'packageType': package_data['packageType'],
-                'packageName': package_data['packageName'],
-                'pageNumbers': package_data['pageNumbers'],
                 'packageResult': json.dumps(package_data['packageResult'])
             }
 
@@ -1219,21 +1224,430 @@ class GeneratorDialog(wx.Dialog):
         try:
             params = package_data['packageResult']
             package_name = package_data['packageName']
+            package_type = package_data.get('packageType', '').upper()
+            # 获取当前板子
+            board = pcbnew.GetBoard()
+            if not board:
+                wx.MessageBox("无法获取当前板子", "错误", wx.OK | wx.ICON_ERROR)
+                return
 
-            # 提取必要参数
-            pin_count = int(params.get('Pin Count', params.get('PinCount', 8)))
-            pitch = float(params.get('Pitch', 1.27))
-            pad_length = float(params.get('Foot Length', params.get('FootLength', 0.6)))
-            pad_width = float(params.get('Lead Width', params.get('LeadWidth', 0.45)))
-            body_length = float(params.get('Package Body Length',
-                                         params.get('PackageBodyLength', 4.9)))
-            body_width = float(params.get('Package Body Width',
-                                        params.get('PackageBodyWidth', 3.9)))
-            overall_width = float(params.get('Overall Width',
-                                           params.get('OverallWidth', 6.0)))
+            if package_type == 'SOIC':
+                # 修改这里：只传入3个参数（self被自动传递）
+                footprint = self._generate_soic_footprint(package_name, params)
+            elif package_type == 'QFN':
+                # 修改这里：只传入3个参数
+                footprint = self._generate_qfn_footprint(package_name, params)
+            else:
+                wx.MessageBox(f"不支持的封装类型: {package_type}", "错误", wx.OK | wx.ICON_ERROR)
+                return
+
+            # 添加到板子
+            if footprint:
+                board.Add(footprint)
+                # 刷新显示
+                pcbnew.Refresh()
+                # 保存板子
+                pcbnew.GetBoard().Save(board.GetFileName())
+                self.save_package_to_api(package_data)
+                wx.MessageBox(f"封装 {package_name} 已添加到板子", "成功", wx.OK | wx.ICON_INFORMATION)
+
+        except Exception as e:
+            import traceback
+            with open("C:/Log/kicad_plugin_error.txt", "w") as f:
+                f.write(traceback.format_exc())
+            wx.MessageBox(f"生成封装错误: {str(e)}", "错误", wx.OK | wx.ICON_ERROR)
+
+    def _generate_soic_footprint(self, package_name, params):
+        """
+        生成SOIC封装
+        """
+        try:
+            # 提取SOIC参数
+            pin_count = int(params.get('Pin Count'))
+            pitch = float(params.get('Pitch'))
+            pad_length = float(params.get('Foot Length', params.get('Pad Length')))
+            pad_width = float(params.get('Lead Width', params.get('Pad Width')))
+            body_length = float(params.get('Package Body Length'))
+            body_width = float(params.get('Package Body Width'))
+            overall_width = float(params.get('Overall Width'))
+
+            # 创建封装对象
+            board = pcbnew.GetBoard()
+            if not board:
+                raise Exception("无法获取当前板子")
+            footprint = pcbnew.FOOTPRINT(board)
+
+            # 设置封装ID
+            footprint.SetFPID(pcbnew.LIB_ID("", package_name))
+
+            # 设置描述和关键字
+            footprint.SetLibDescription(f"SOIC, {pin_count} Pin, pitch {pitch}mm")
+            footprint.SetKeywords("SOIC SO")
+
+            # 设置参考和值
+            self._add_soic_reference(footprint, body_length)
+            footprint.SetValue(package_name)
+            self._add_soic_value(footprint, package_name, body_length)
+
+            # 添加焊盘
+            self._add_soic_pads(footprint, params)
+
+            # 添加丝印层
+            self._add_soic_silkscreen(footprint, params)
+
+            # 添加禁止布线层（Courtyard）
+            self._add_soic_courtyard(footprint, params)
+
+            # 添加装配文档层
+            self._add_soic_fab_layer(footprint, params)
+
+            return footprint
+
+        except Exception as e:
+            raise Exception(f"生成SOIC封装错误: {str(e)}")
+
+    def _add_soic_reference(self, footprint, body_length):
+        """添加参考标识"""
+        # 设置参考文本
+        footprint.SetReference("REF**")
+
+        # 设置参考文本属性
+        ref = footprint.Reference()
+        ref.SetText("REF**")
+        ref.SetLayer(pcbnew.F_SilkS)
+        ref.SetPosition(pcbnew.VECTOR2I(
+            0,
+            pcbnew.FromMM(-body_length / 2 - 1.0)  # 在封装下方1mm
+        ))
+        ref.SetTextSize(pcbnew.VECTOR2I(
+            pcbnew.FromMM(1.0),
+            pcbnew.FromMM(1.0)
+        ))
+        ref.SetTextThickness(pcbnew.FromMM(0.15))
+        ref.SetHorizJustify(pcbnew.GR_TEXT_H_ALIGN_CENTER)
+
+    def _add_soic_value(self, footprint, package_name, body_length):
+        """添加值标识"""
+        # 设置值文本
+        footprint.SetValue(package_name)
+
+        # 设置值文本属性
+        val = footprint.Value()
+        val.SetText(package_name)
+        val.SetLayer(pcbnew.F_Fab)
+        val.SetPosition(pcbnew.VECTOR2I(
+            0,
+            pcbnew.FromMM(body_length / 2 + 1.0)  # 在封装上方1mm
+        ))
+        val.SetTextSize(pcbnew.VECTOR2I(
+            pcbnew.FromMM(1.0),
+            pcbnew.FromMM(1.0)
+        ))
+        val.SetTextThickness(pcbnew.FromMM(0.15))
+        val.SetHorizJustify(pcbnew.GR_TEXT_H_ALIGN_CENTER)
+
+    def _add_soic_pads(self, footprint, params):
+        """添加焊盘"""
+        pin_count = int(params.get('Pin Count'))
+        pitch = float(params.get('Pitch'))
+        pad_width = float(params.get('Pad Width', params.get('Lead Width')))
+        pad_length = float(params.get('Pad Length', params.get('Foot Length')))
+        overall_width = float(params.get('Overall Width', 6.0))
+
+        # 计算行间距
+        row_spacing = overall_width - pad_length
+
+        # 每边的引脚数
+        pins_per_side = pin_count // 2
+
+        for i in range(pins_per_side):
+            # 计算Y位置
+            y_pos = (i - (pins_per_side - 1) / 2) * pitch
+
+            # 左侧焊盘（引脚1开始）
+            pad_num_left = i + 1
+            x_pos_left = -row_spacing / 2
+
+            pad_left = pcbnew.PAD(footprint)
+            pad_left.SetNumber(str(pad_num_left))
+            pad_left.SetShape(pcbnew.PAD_SHAPE_RECT)
+            # 或者使用圆角矩形：pcbnew.PAD_SHAPE_ROUNDRECT
+            # pad_left.SetRoundRectRadiusRatio(0.25)  # 设置圆角比例
+
+            pad_left.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
+
+            # 设置焊盘尺寸
+            pad_left.SetSize(pcbnew.VECTOR2I(
+                pcbnew.FromMM(pad_length),
+                pcbnew.FromMM(pad_width)
+            ))
+
+            # 设置焊盘位置
+            pad_left.SetPosition(pcbnew.VECTOR2I(
+                pcbnew.FromMM(x_pos_left),
+                pcbnew.FromMM(y_pos)
+            ))
+
+            # 设置焊盘层
+            layerset = pcbnew.LSET()
+            layerset.AddLayer(pcbnew.F_Cu)  # 顶层铜
+            layerset.AddLayer(pcbnew.F_Paste)  # 顶层焊膏
+            layerset.AddLayer(pcbnew.F_Mask)  # 顶层阻焊
+            pad_left.SetLayerSet(layerset)
+
+            footprint.Add(pad_left)
+
+            # 右侧焊盘（从最后一个引脚开始）
+            pad_num_right = pin_count - i
+            x_pos_right = row_spacing / 2
+
+            pad_right = pcbnew.PAD(footprint)
+            pad_right.SetNumber(str(pad_num_right))
+            pad_right.SetShape(pcbnew.PAD_SHAPE_RECT)
+            pad_right.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
+
+            # 设置焊盘尺寸
+            pad_right.SetSize(pcbnew.VECTOR2I(
+                pcbnew.FromMM(pad_length),
+                pcbnew.FromMM(pad_width)
+            ))
+
+            # 设置焊盘位置
+            pad_right.SetPosition(pcbnew.VECTOR2I(
+                pcbnew.FromMM(x_pos_right),
+                pcbnew.FromMM(y_pos)
+            ))
+
+            # 设置焊盘层
+            layerset = pcbnew.LSET()
+            layerset.AddLayer(pcbnew.F_Cu)
+            layerset.AddLayer(pcbnew.F_Paste)
+            layerset.AddLayer(pcbnew.F_Mask)
+            pad_right.SetLayerSet(layerset)
+
+            footprint.Add(pad_right)
+
+    def _add_soic_silkscreen(self, footprint, params):
+        """添加丝印层"""
+        body_width = float(params.get('Package Body Width'))
+        body_length = float(params.get('Package Body Length'))
+        pin_count = int(params.get('Pin Count'))
+        pitch = float(params.get('Pitch'))
+        pad_width = float(params.get('Pad Width', params.get('Lead Width')))
+        pad_length = float(params.get('Pad Length', params.get('Foot Length')))
+
+        # 丝印线宽
+        line_width = pcbnew.FromMM(0.12)
+
+        # 计算丝印边界
+        silk_offset = 0.15  # 距离焊盘的间隙
+        x_silk = body_width / 2
+        y_silk = body_length / 2
+
+        pins_per_side = pin_count // 2
+        y_top_pad = -(pins_per_side - 1) / 2 * pitch - pad_width / 2
+        y_bottom_pad = (pins_per_side - 1) / 2 * pitch + pad_width / 2
+
+        # 左侧线（分两段，避开焊盘）
+        if y_top_pad - silk_offset > -y_silk:
+            line = pcbnew.PCB_SHAPE(footprint)
+            line.SetShape(pcbnew.S_SEGMENT)
+            line.SetStart(pcbnew.VECTOR2I(
+                pcbnew.FromMM(-x_silk),
+                pcbnew.FromMM(-y_silk)
+            ))
+            line.SetEnd(pcbnew.VECTOR2I(
+                pcbnew.FromMM(-x_silk),
+                pcbnew.FromMM(y_top_pad - silk_offset)
+            ))
+            line.SetLayer(pcbnew.F_SilkS)
+            line.SetWidth(line_width)
+            footprint.Add(line)
+
+        if y_bottom_pad + silk_offset < y_silk:
+            line = pcbnew.PCB_SHAPE(footprint)
+            line.SetShape(pcbnew.S_SEGMENT)
+            line.SetStart(pcbnew.VECTOR2I(
+                pcbnew.FromMM(-x_silk),
+                pcbnew.FromMM(y_bottom_pad + silk_offset)
+            ))
+            line.SetEnd(pcbnew.VECTOR2I(
+                pcbnew.FromMM(-x_silk),
+                pcbnew.FromMM(y_silk)
+            ))
+            line.SetLayer(pcbnew.F_SilkS)
+            line.SetWidth(line_width)
+            footprint.Add(line)
+
+        # 右侧线（完整）
+        line = pcbnew.PCB_SHAPE(footprint)
+        line.SetShape(pcbnew.S_SEGMENT)
+        line.SetStart(pcbnew.VECTOR2I(
+            pcbnew.FromMM(x_silk),
+            pcbnew.FromMM(-y_silk)
+        ))
+        line.SetEnd(pcbnew.VECTOR2I(
+            pcbnew.FromMM(x_silk),
+            pcbnew.FromMM(y_silk)
+        ))
+        line.SetLayer(pcbnew.F_SilkS)
+        line.SetWidth(line_width)
+        footprint.Add(line)
+
+        # 顶部线
+        line = pcbnew.PCB_SHAPE(footprint)
+        line.SetShape(pcbnew.S_SEGMENT)
+        line.SetStart(pcbnew.VECTOR2I(
+            pcbnew.FromMM(-x_silk),
+            pcbnew.FromMM(-y_silk)
+        ))
+        line.SetEnd(pcbnew.VECTOR2I(
+            pcbnew.FromMM(x_silk),
+            pcbnew.FromMM(-y_silk)
+        ))
+        line.SetLayer(pcbnew.F_SilkS)
+        line.SetWidth(line_width)
+        footprint.Add(line)
+
+        # 底部线
+        line = pcbnew.PCB_SHAPE(footprint)
+        line.SetShape(pcbnew.S_SEGMENT)
+        line.SetStart(pcbnew.VECTOR2I(
+            pcbnew.FromMM(-x_silk),
+            pcbnew.FromMM(y_silk)
+        ))
+        line.SetEnd(pcbnew.VECTOR2I(
+            pcbnew.FromMM(x_silk),
+            pcbnew.FromMM(y_silk)
+        ))
+        line.SetLayer(pcbnew.F_SilkS)
+        line.SetWidth(line_width)
+        footprint.Add(line)
+
+        # Pin 1标记（圆点）
+        marker = pcbnew.PCB_SHAPE(footprint)
+        marker.SetShape(pcbnew.S_CIRCLE)
+        marker.SetLayer(pcbnew.F_SilkS)
+        marker.SetWidth(line_width)
+
+        # 计算标记位置（在封装左上角外部）
+        marker_offset = 0.4
+        marker_center = pcbnew.VECTOR2I(
+            pcbnew.FromMM(-x_silk - marker_offset),
+            pcbnew.FromMM(-y_silk - marker_offset)
+        )
+        marker_radius = pcbnew.FromMM(0.2)
+
+        marker.SetCenter(marker_center)
+        marker.SetRadius(marker_radius)
+        footprint.Add(marker)
+
+    def _add_soic_courtyard(self, footprint, params):
+        """添加禁止布线层（Courtyard）"""
+        overall_width = float(params.get('Overall Width'))
+        body_length = float(params.get('Package Body Length'))
+
+        courtyard_margin = 0.25  # 外扩间距
+        x_court = overall_width / 2 + courtyard_margin
+        y_court = body_length / 2 + courtyard_margin
+
+        # 创建矩形
+        rect = pcbnew.PCB_SHAPE(footprint)
+        rect.SetShape(pcbnew.S_RECT)
+        rect.SetLayer(pcbnew.F_CrtYd)
+        rect.SetWidth(pcbnew.FromMM(0.05))
+
+        rect.SetStart(pcbnew.VECTOR2I(
+            pcbnew.FromMM(-x_court),
+            pcbnew.FromMM(-y_court)
+        ))
+        rect.SetEnd(pcbnew.VECTOR2I(
+            pcbnew.FromMM(x_court),
+            pcbnew.FromMM(y_court)
+        ))
+
+        footprint.Add(rect)
+
+    def _add_soic_fab_layer(self, footprint, params):
+        """添加SOIC装配层"""
+        body_width = float(params.get('Package Body Width'))
+        body_length = float(params.get('Package Body Length'))
+
+        x_fab = body_width / 2
+        y_fab = body_length / 2
+
+        line_width = pcbnew.FromMM(0.1)
+
+        # 主体轮廓矩形
+        rect = pcbnew.PCB_SHAPE(footprint)
+        rect.SetShape(pcbnew.S_RECT)
+        rect.SetStart(pcbnew.VECTOR2I(
+            pcbnew.FromMM(-x_fab),
+            pcbnew.FromMM(-y_fab)
+        ))
+        rect.SetEnd(pcbnew.VECTOR2I(
+            pcbnew.FromMM(x_fab),
+            pcbnew.FromMM(y_fab)
+        ))
+        rect.SetLayer(pcbnew.F_Fab)
+        rect.SetWidth(line_width)
+        footprint.Add(rect)
+
+        # Pin 1标记（斜角）
+        chamfer = 0.5  # 斜角长度
+        if body_width >= chamfer and body_length >= chamfer:
+            line1 = pcbnew.PCB_SHAPE(footprint)
+            line1.SetShape(pcbnew.S_SEGMENT)
+            line1.SetStart(pcbnew.VECTOR2I(
+                pcbnew.FromMM(-x_fab),
+                pcbnew.FromMM(-y_fab + chamfer)
+            ))
+            line1.SetEnd(pcbnew.VECTOR2I(
+                pcbnew.FromMM(-x_fab + chamfer),
+                pcbnew.FromMM(-y_fab)
+            ))
+            line1.SetLayer(pcbnew.F_Fab)
+            line1.SetWidth(line_width)
+            footprint.Add(line1)
+
+    def _generate_qfn_footprint(self, package_name, params):
+        """
+        生成QFN封装
+        """
+        try:
+            # 提取QFN参数
+            pad_width = float(params.get('Pad Width'))
+            pad_length = float(params.get('Pad Length'))
+            lead_width = float(params.get('Lead Width'))
+            lead_length = float(params.get('Lead Length'))
+
+            # 引脚数量
+            pin_count_x = int(params.get('Pin Count X'))
+            pin_count_y = int(params.get('Pin Count Y'))
+            total_pins = pin_count_x * 2 + pin_count_y * 2
+
+            # 间距
+            lead_pitch_x = float(params.get('Lead Pitch X'))
+            lead_pitch_y = float(params.get('Lead Pitch Y'))
+
+            # 本体尺寸
+            body_size_x = float(params.get('Package Body Size X'))
+            body_size_y = float(params.get('Package Body Size Y'))
+
+            # 热焊盘尺寸
+            exposed_pad_size_x = float(params.get('Exposed Pad Size X'))
+            exposed_pad_size_y = float(params.get('Exposed Pad Size Y'))
+            exposed_pad_land_size_x = float(params.get('Exposed Pad Land Size X'))
+            exposed_pad_land_size_y = float(params.get('Exposed Pad Land Size Y'))
+
+            # 对边焊盘间距
+            span_x = float(params.get('Opposite Pad Center-to-Center Span X', body_size_x + 1.0))
+            span_y = float(params.get('Opposite Pad Center-to-Center Span Y', body_size_y + 1.0))
 
             # 创建封装
             board = pcbnew.GetBoard()
+            if not board:
+                raise Exception("无法获取当前板子")
             footprint = pcbnew.FOOTPRINT(board)
             footprint.SetReference("U**")
             footprint.SetValue(package_name)
@@ -1241,93 +1655,151 @@ class GeneratorDialog(wx.Dialog):
             # 设置属性
             footprint.SetAttributes(pcbnew.FP_SMD)
 
-            # 计算焊盘间距
-            pins_per_side = pin_count // 2
-            pad_spacing = overall_width
+            # 计算焊盘位置
+            # 底部焊盘（X方向）
+            half_pins_x = pin_count_x // 2
+            for i in range(pin_count_x):
+                x_pos = (i - (pin_count_x - 1) / 2) * lead_pitch_x
 
-            # 生成焊盘
-            for i in range(pins_per_side):
-                y_pos = (i - (pins_per_side - 1) / 2) * pitch
+                # 底部焊盘（引脚1通常在左下角，顺时针方向）
+                pad_bottom = pcbnew.PAD(footprint)
+                pad_bottom.SetNumber(str(i + 1))
+                pad_bottom.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
+                pad_bottom.SetShape(pcbnew.PAD_SHAPE_RECT)
+                pad_bottom.SetSize(pcbnew.VECTOR2I(pcbnew.FromMM(pad_length), pcbnew.FromMM(pad_width)))
+                pad_bottom.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(x_pos), pcbnew.FromMM(span_y / 2)))
+                pad_bottom.SetOrientation(0)  # 水平方向
+                pad_bottom.SetLayerSet(pad_bottom.SMDMask())
+                footprint.Add(pad_bottom)
 
-                # 左侧焊盘
-                pad_left = pcbnew.PAD(footprint)
-                pad_left.SetNumber(str(i + 1))
-                pad_left.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
-                pad_left.SetShape(pcbnew.PAD_SHAPE_RECT)
-                pad_left.SetSize(pcbnew.wxSizeMM(pad_length, pad_width))
-                pad_left.SetPosition(pcbnew.wxPointMM(-pad_spacing/2, y_pos))
-                pad_left.SetLayerSet(pad_left.SMDMask())
-                footprint.Add(pad_left)
+            # 右侧焊盘（Y方向）
+            for i in range(pin_count_y):
+                y_pos = (i - (pin_count_y - 1) / 2) * lead_pitch_y
 
                 # 右侧焊盘
                 pad_right = pcbnew.PAD(footprint)
-                pad_right.SetNumber(str(i + 1 + pins_per_side))
+                pad_num = pin_count_x + i + 1
+                pad_right.SetNumber(str(pad_num))
                 pad_right.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
                 pad_right.SetShape(pcbnew.PAD_SHAPE_RECT)
-                pad_right.SetSize(pcbnew.wxSizeMM(pad_length, pad_width))
-                pad_right.SetPosition(pcbnew.wxPointMM(pad_spacing/2, y_pos))
+                pad_right.SetSize(pcbnew.VECTOR2I(pcbnew.FromMM(pad_width), pcbnew.FromMM(pad_length)))
+                pad_right.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(span_x / 2), pcbnew.FromMM(y_pos)))
+                pad_right.SetOrientation(90 * 10)  # 垂直方向
                 pad_right.SetLayerSet(pad_right.SMDMask())
                 footprint.Add(pad_right)
 
+            # 顶部焊盘（X方向，反向）
+            for i in range(pin_count_x):
+                x_pos = ((pin_count_x - 1) / 2 - i) * lead_pitch_x  # 反向
+
+                # 顶部焊盘
+                pad_top = pcbnew.PAD(footprint)
+                pad_num = pin_count_x + pin_count_y + i + 1
+                pad_top.SetNumber(str(pad_num))
+                pad_top.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
+                pad_top.SetShape(pcbnew.PAD_SHAPE_RECT)
+                pad_top.SetSize(pcbnew.VECTOR2I(pcbnew.FromMM(pad_length), pcbnew.FromMM(pad_width)))
+                pad_top.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(x_pos), pcbnew.FromMM(-span_y / 2)))
+                pad_top.SetOrientation(0)
+                pad_top.SetLayerSet(pad_top.SMDMask())
+                footprint.Add(pad_top)
+
+            # 左侧焊盘（Y方向，反向）
+            for i in range(pin_count_y):
+                y_pos = ((pin_count_y - 1) / 2 - i) * lead_pitch_y  # 反向
+
+                # 左侧焊盘
+                pad_left = pcbnew.PAD(footprint)
+                pad_num = pin_count_x + pin_count_y + pin_count_x + i + 1
+                if pad_num <= total_pins:  # 确保不超过总引脚数
+                    pad_left.SetNumber(str(pad_num))
+                    pad_left.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
+                    pad_left.SetShape(pcbnew.PAD_SHAPE_RECT)
+                    pad_left.SetSize(pcbnew.VECTOR2I(pcbnew.FromMM(pad_width), pcbnew.FromMM(pad_length)))
+                    pad_left.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(-span_x / 2), pcbnew.FromMM(y_pos)))
+                    pad_left.SetOrientation(90 * 10)
+                    pad_left.SetLayerSet(pad_left.SMDMask())
+                    footprint.Add(pad_left)
+
+            # 添加热焊盘（如果存在）
+            if exposed_pad_land_size_x > 0 and exposed_pad_land_size_y > 0:
+                thermal_pad = pcbnew.PAD(footprint)
+                thermal_pad.SetNumber(str(total_pins + 1))  # 热焊盘通常为最后一个编号
+                thermal_pad.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
+                thermal_pad.SetShape(pcbnew.PAD_SHAPE_RECT)
+                thermal_pad.SetSize(
+                    pcbnew.VECTOR2I(pcbnew.FromMM(exposed_pad_land_size_x), pcbnew.FromMM(exposed_pad_land_size_y)))
+                thermal_pad.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(0), pcbnew.FromMM(0)))
+                thermal_pad.SetLayerSet(thermal_pad.SMDMask())
+                footprint.Add(thermal_pad)
+
             # 添加外形线
-            self.add_courtyard(footprint, body_length, body_width)
-
-            # 保存封装
-            self.save_footprint(footprint, package_name)
-
+            self.add_courtyard(footprint, body_size_x, body_size_y)
+            return footprint
         except Exception as e:
-            wx.MessageBox(f"生成封装错误: {str(e)}", "错误", wx.OK | wx.ICON_ERROR)
+            raise Exception(f"生成QFN封装错误: {str(e)}")
 
     def add_courtyard(self, footprint, length, width):
         """
-        添加封装外形
+        添加封装外形线
         """
-        margin = 0.25
-        layer = pcbnew.F_CrtYd
-        line_width = pcbnew.FromMM(0.05)
+        try:
+            # 添加丝印外框
+            line_width = 0.1  # 丝印线宽
 
-        pts = [
-            pcbnew.wxPointMM(-length/2 - margin, -width/2 - margin),
-            pcbnew.wxPointMM(length/2 + margin, -width/2 - margin),
-            pcbnew.wxPointMM(length/2 + margin, width/2 + margin),
-            pcbnew.wxPointMM(-length/2 - margin, width/2 + margin)
-        ]
+            # 计算矩形四个角点（使用内部单位）
+            half_length = pcbnew.FromMM(length / 2)
+            half_width = pcbnew.FromMM(width / 2)
 
-        for i in range(4):
-            line = pcbnew.FP_SHAPE(footprint)
-            line.SetShape(pcbnew.S_SEGMENT)
-            line.SetStart(pts[i])
-            line.SetEnd(pts[(i+1) % 4])
-            line.SetLayer(layer)
-            line.SetWidth(line_width)
-            footprint.Add(line)
+            # 创建矩形外框的角点
+            corners = [
+                pcbnew.VECTOR2I(-half_length, -half_width),
+                pcbnew.VECTOR2I(half_length, -half_width),
+                pcbnew.VECTOR2I(half_length, half_width),
+                pcbnew.VECTOR2I(-half_length, half_width),
+                pcbnew.VECTOR2I(-half_length, -half_width)
+            ]
 
-    def save_footprint(self, footprint, package_name):
-        """
-        保存封装文件
-        """
-        wildcard = "KiCad Footprint (*.kicad_mod)|*.kicad_mod"
-        default_name = f"{package_name}.kicad_mod"
+            # 添加丝印线条
+            for i in range(4):
+                line = pcbnew.PCB_SHAPE(footprint)
+                line.SetShape(pcbnew.S_SEGMENT)
+                line.SetLayer(pcbnew.F_SilkS)
+                line.SetWidth(pcbnew.FromMM(line_width))
+                line.SetStart(corners[i])
+                line.SetEnd(corners[i + 1])
+                footprint.Add(line)
 
-        dialog = wx.FileDialog(self, "保存封装文件",
-                              defaultFile=default_name,
-                              wildcard=wildcard,
-                              style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT)
+            # 添加Pin 1标识
+            marker = pcbnew.PCB_SHAPE(footprint)
+            marker.SetShape(pcbnew.S_CIRCLE)
+            marker.SetLayer(pcbnew.F_SilkS)
+            marker.SetWidth(pcbnew.FromMM(0.1))
+            marker.SetCenter(pcbnew.VECTOR2I(
+                -half_length + pcbnew.FromMM(0.5),
+                -half_width + pcbnew.FromMM(0.5)
+            ))
+            marker.SetRadius(pcbnew.FromMM(0.2))
+            footprint.Add(marker)
 
-        if dialog.ShowModal() == wx.ID_OK:
-            path = dialog.GetPath()
-            footprint.SetFPID(pcbnew.LIB_ID(package_name))
+            # 添加阻焊层（Courtyard）
+            courtyard_margin = pcbnew.FromMM(0.2)  # 阻焊层外扩
+            courtyard_line = pcbnew.PCB_SHAPE(footprint)
+            courtyard_line.SetShape(pcbnew.S_RECT)
+            courtyard_line.SetLayer(pcbnew.F_CrtYd)
+            courtyard_line.SetWidth(pcbnew.FromMM(0.05))
+            courtyard_line.SetStart(pcbnew.VECTOR2I(
+                -half_length - courtyard_margin,
+                -half_width - courtyard_margin
+            ))
+            courtyard_line.SetEnd(pcbnew.VECTOR2I(
+                half_length + courtyard_margin,
+                half_width + courtyard_margin
+            ))
+            footprint.Add(courtyard_line)
 
-            try:
-                io = pcbnew.PCB_IO()
-                io.FootprintSave(path, footprint)
-                self.set_status(f"封装已保存: {package_name}")
-            except:
-                with open(path, 'w') as f:
-                    f.write(footprint.Format())
-                self.set_status(f"封装已保存: {package_name}")
-
-        dialog.Destroy()
+        except Exception as e:
+            print(f"添加外形线错误: {str(e)}")
 
     def set_status(self, message):
         """设置状态栏文本"""

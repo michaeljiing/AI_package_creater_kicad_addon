@@ -5,6 +5,7 @@ KiCad Footprint Generator Plugin
 
 import pcbnew
 import wx
+import wx.grid
 import os
 import json
 import requests
@@ -977,51 +978,81 @@ class GeneratorDialog(wx.Dialog):
 
         sizer.Add(info_sizer, 0, wx.EXPAND | wx.ALL, 10)
 
-        # 参数表格
-        params_list = wx.ListCtrl(panel, style=wx.LC_REPORT | wx.LC_EDIT_LABELS,
-                                 size=(-1, 300))
-        params_list.SetName(f"params_{index}")
 
-        # 添加列
-        params_list.InsertColumn(0, "参数名称", width=250)
-        params_list.InsertColumn(1, "数值", width=150)
-        params_list.InsertColumn(2, "单位", width=100)
+        # 参数表格
+        params_grid = wx.grid.Grid(panel)
+        params_grid.SetName(f"params_{index}")
+        params_grid.CreateGrid(0, 3)  # 初始0行，3列
+        params_grid.SetColLabelValue(0, "参数名称")
+        params_grid.SetColLabelValue(1, "数值")
+        params_grid.SetColLabelValue(2, "单位")
+
+        params_grid.SetRowLabelSize(0)
+
+        # 设置列宽
+        params_grid.SetColSize(0, 330)
+        params_grid.SetColSize(1, 180)
+        params_grid.SetColSize(2, 100)
+
+        # 设置表格高度
+        params_grid.SetMinSize((-1, 300))
 
         # 解析并填充参数
         package_result = package.get('packageResult', '{}')
         try:
             params = json.loads(package_result)
 
+            row_idx = 0
             for key, value in params.items():
-                idx = params_list.InsertItem(params_list.GetItemCount(), key)
-                params_list.SetItem(idx, 1, str(value))
-                # 根据参数名判断单位
+                params_grid.AppendRows(1)
+
+                # 设置参数名称（只读）
+                params_grid.SetCellValue(row_idx, 0, key)
+                params_grid.SetReadOnly(row_idx, 0, True)
+                params_grid.SetCellBackgroundColour(row_idx, 0, wx.Colour(240, 240, 240))
+
+                # 设置数值（可编辑）
+                params_grid.SetCellValue(row_idx, 1, str(value))
+                params_grid.SetCellBackgroundColour(row_idx, 1, wx.WHITE)
+
+                # 设置单位（只读）
                 unit = self.get_unit_for_param(key)
-                params_list.SetItem(idx, 2, unit)
+                params_grid.SetCellValue(row_idx, 2, unit)
+                params_grid.SetReadOnly(row_idx, 2, True)
+                params_grid.SetCellBackgroundColour(row_idx, 2, wx.Colour(240, 240, 240))
+
+                row_idx += 1
 
         except Exception as e:
             print(f"解析封装参数失败: {str(e)}")
 
-        sizer.Add(params_list, 1, wx.EXPAND | wx.ALL, 10)
+        # 自动调整行高
+        params_grid.AutoSizeRows()
+
+        # 禁用行列标签的拖拽调整
+        params_grid.EnableDragColSize(False)
+        params_grid.EnableDragRowSize(False)
+
+        sizer.Add(params_grid, 1, wx.EXPAND | wx.ALL, 10)
 
         # 操作按钮
         btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
 
         add_param_btn = wx.Button(panel, label="添加参数")
         add_param_btn.Bind(wx.EVT_BUTTON,
-                          lambda e, pl=params_list: self.on_add_param(e, pl))
+                           lambda e, pg=params_grid: self.on_add_param_grid(e, pg))
         btn_sizer.Add(add_param_btn, 0, wx.ALL, 5)
 
         del_param_btn = wx.Button(panel, label="删除选中参数")
         del_param_btn.Bind(wx.EVT_BUTTON,
-                          lambda e, pl=params_list: self.on_delete_param(e, pl))
+                           lambda e, pg=params_grid: self.on_delete_param_grid(e, pg))
         btn_sizer.Add(del_param_btn, 0, wx.ALL, 5)
 
         btn_sizer.AddStretchSpacer()
 
         generate_btn = wx.Button(panel, label="生成此封装")
         generate_btn.Bind(wx.EVT_BUTTON,
-                         lambda e, i=index: self.on_generate_single(e, i))
+                          lambda e, i=index: self.on_generate_single(e, i))
         btn_sizer.Add(generate_btn, 0, wx.ALL, 5)
 
         sizer.Add(btn_sizer, 0, wx.EXPAND | wx.ALL, 5)
@@ -1039,9 +1070,9 @@ class GeneratorDialog(wx.Dialog):
         else:
             return "mm"
 
-    def on_add_param(self, event, params_list):
+    def on_add_param_grid(self, event, params_grid):
         """
-        添加参数 - 同时输入名称和数值
+        添加参数到Grid
         """
         # 创建自定义对话框
         dlg = AddParameterDialog(self)
@@ -1052,19 +1083,50 @@ class GeneratorDialog(wx.Dialog):
             param_unit = dlg.param_unit.GetValue()
 
             if param_name:  # 至少要有参数名
-                idx = params_list.InsertItem(params_list.GetItemCount(), param_name)
-                params_list.SetItem(idx, 1, param_value)
-                params_list.SetItem(idx, 2, param_unit)
+                # 添加新行
+                params_grid.AppendRows(1)
+                row_idx = params_grid.GetNumberRows() - 1
+
+                # 设置参数名称（只读）
+                params_grid.SetCellValue(row_idx, 0, param_name)
+                params_grid.SetReadOnly(row_idx, 0, True)
+                params_grid.SetCellBackgroundColour(row_idx, 0, wx.Colour(240, 240, 240))
+
+                # 设置数值（可编辑）
+                params_grid.SetCellValue(row_idx, 1, param_value)
+                params_grid.SetCellBackgroundColour(row_idx, 1, wx.WHITE)
+
+                # 设置单位（只读）
+                params_grid.SetCellValue(row_idx, 2, param_unit)
+                params_grid.SetReadOnly(row_idx, 2, True)
+                params_grid.SetCellBackgroundColour(row_idx, 2, wx.Colour(240, 240, 240))
+
+                # 刷新显示
+                params_grid.ForceRefresh()
 
         dlg.Destroy()
 
-    def on_delete_param(self, event, params_list):
+    def on_delete_param_grid(self, event, params_grid):
         """
-        删除选中的参数
+        删除Grid中选中的参数
         """
-        selected = params_list.GetFirstSelected()
-        if selected >= 0:
-            params_list.DeleteItem(selected)
+        # 获取当前选中的行
+        selected_rows = params_grid.GetSelectedRows()
+
+        if not selected_rows:
+            # 如果没有选中整行，尝试获取当前单元格所在行
+            current_row = params_grid.GetGridCursorRow()
+            if current_row >= 0:
+                selected_rows = [current_row]
+
+        if selected_rows:
+            # 从后往前删除（避免索引变化）
+            for row in sorted(selected_rows, reverse=True):
+                params_grid.DeleteRows(row, 1)
+
+            params_grid.ForceRefresh()
+        else:
+            wx.MessageBox("请先选中要删除的行", "提示", wx.OK | wx.ICON_INFORMATION)
 
     def on_generate_single(self, event, index):
         """
@@ -1107,13 +1169,15 @@ class GeneratorDialog(wx.Dialog):
             package_name = panel.FindWindowByName(f"packageName_{index}").GetValue()
             page_numbers = panel.FindWindowByName(f"pageNumbers_{index}").GetValue()
 
-            # 收集参数
-            params_list = panel.FindWindowByName(f"params_{index}")
+            # 收集参数 - 从Grid中获取
+            params_grid = panel.FindWindowByName(f"params_{index}")
             params = {}
-            for i in range(params_list.GetItemCount()):
-                key = params_list.GetItemText(i, 0)
-                value = params_list.GetItemText(i, 1)
-                params[key] = value
+
+            for row in range(params_grid.GetNumberRows()):
+                key = params_grid.GetCellValue(row, 0)
+                value = params_grid.GetCellValue(row, 1)
+                if key:  # 只添加有名称的参数
+                    params[key] = value
 
             return {
                 'packageType': package_type,

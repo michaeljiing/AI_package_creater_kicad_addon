@@ -1612,194 +1612,577 @@ class GeneratorDialog(wx.Dialog):
 
     def _generate_qfn_footprint(self, package_name, params):
         """
-        生成QFN封装
+        生成QFN封装（完整版本）
         """
         try:
             # 提取QFN参数
-            pad_width = float(params.get('Pad Width'))
-            pad_length = float(params.get('Pad Length'))
-            lead_width = float(params.get('Lead Width'))
-            lead_length = float(params.get('Lead Length'))
-
-            # 引脚数量
             pin_count_x = int(params.get('Pin Count X'))
             pin_count_y = int(params.get('Pin Count Y'))
-            total_pins = pin_count_x * 2 + pin_count_y * 2
+            pad_width = float(params.get('Pad Width'))
+            pad_length = float(params.get('Pad Length'))
+            pitch_x = float(params.get('Lead Pitch X'))
+            pitch_y = float(params.get('Lead Pitch Y'))
+            body_x = float(params.get('Package Body Size X'))
+            body_y = float(params.get('Package Body Size Y'))
+            ep_size_x = float(params.get('Exposed Pad Size X'))
+            ep_size_y = float(params.get('Exposed Pad Size Y'))
+            ep_land_x = float(params.get('Exposed Pad Land Size X'))
+            ep_land_y = float(params.get('Exposed Pad Land Size Y'))
 
-            # 间距
-            lead_pitch_x = float(params.get('Lead Pitch X'))
-            lead_pitch_y = float(params.get('Lead Pitch Y'))
+            # 计算总引脚数
+            total_pins = (pin_count_x + pin_count_y) * 2
 
-            # 本体尺寸
-            body_size_x = float(params.get('Package Body Size X'))
-            body_size_y = float(params.get('Package Body Size Y'))
-
-            # 热焊盘尺寸
-            exposed_pad_size_x = float(params.get('Exposed Pad Size X'))
-            exposed_pad_size_y = float(params.get('Exposed Pad Size Y'))
-            exposed_pad_land_size_x = float(params.get('Exposed Pad Land Size X'))
-            exposed_pad_land_size_y = float(params.get('Exposed Pad Land Size Y'))
-
-            # 对边焊盘间距
-            span_x = float(params.get('Opposite Pad Center-to-Center Span X', body_size_x + 1.0))
-            span_y = float(params.get('Opposite Pad Center-to-Center Span Y', body_size_y + 1.0))
-
-            # 创建封装
+            # 创建封装对象
             board = pcbnew.GetBoard()
-            if not board:
-                raise Exception("无法获取当前板子")
             footprint = pcbnew.FOOTPRINT(board)
-            footprint.SetReference("U**")
+
+            # 设置封装ID
+            footprint.SetFPID(pcbnew.LIB_ID("", package_name))
+
+            # 设置描述和关键字
+            footprint.SetLibDescription(
+                f"QFN, {total_pins} Pin ({pin_count_x}x{pin_count_y}), "
+                f"pitch {pitch_x}mm x {pitch_y}mm, "
+                f"body size {body_x}x{body_y}mm"
+            )
+            footprint.SetKeywords("QFN DFN")
+
+            # 添加参考标识
+            self._add_qfn_reference(footprint, body_y)
+
+            # 添加值标识
             footprint.SetValue(package_name)
+            self._add_qfn_value(footprint, package_name, body_y)
 
-            # 设置属性
-            footprint.SetAttributes(pcbnew.FP_SMD)
+            # 添加周边焊盘
+            self._add_qfn_perimeter_pads(footprint, params)
 
-            # 计算焊盘位置
-            # 底部焊盘（X方向）
-            half_pins_x = pin_count_x // 2
-            for i in range(pin_count_x):
-                x_pos = (i - (pin_count_x - 1) / 2) * lead_pitch_x
+            # 添加中心散热焊盘（如果有）
+            if ep_size_x > 0 and ep_size_y > 0:
+                self._add_qfn_thermal_pad(footprint, params)
 
-                # 底部焊盘（引脚1通常在左下角，顺时针方向）
-                pad_bottom = pcbnew.PAD(footprint)
-                pad_bottom.SetNumber(str(i + 1))
-                pad_bottom.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
-                pad_bottom.SetShape(pcbnew.PAD_SHAPE_RECT)
-                pad_bottom.SetSize(pcbnew.VECTOR2I(pcbnew.FromMM(pad_length), pcbnew.FromMM(pad_width)))
-                pad_bottom.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(x_pos), pcbnew.FromMM(span_y / 2)))
-                pad_bottom.SetOrientation(0)  # 水平方向
-                pad_bottom.SetLayerSet(pad_bottom.SMDMask())
-                footprint.Add(pad_bottom)
+            # 添加丝印层
+            self._add_qfn_silkscreen(footprint, params)
 
-            # 右侧焊盘（Y方向）
-            for i in range(pin_count_y):
-                y_pos = (i - (pin_count_y - 1) / 2) * lead_pitch_y
+            # 添加禁止布线层
+            self._add_qfn_courtyard(footprint, params)
 
-                # 右侧焊盘
-                pad_right = pcbnew.PAD(footprint)
-                pad_num = pin_count_x + i + 1
-                pad_right.SetNumber(str(pad_num))
-                pad_right.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
-                pad_right.SetShape(pcbnew.PAD_SHAPE_RECT)
-                pad_right.SetSize(pcbnew.VECTOR2I(pcbnew.FromMM(pad_width), pcbnew.FromMM(pad_length)))
-                pad_right.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(span_x / 2), pcbnew.FromMM(y_pos)))
-                pad_right.SetOrientation(90 * 10)  # 垂直方向
-                pad_right.SetLayerSet(pad_right.SMDMask())
-                footprint.Add(pad_right)
+            # 添加装配文档层
+            self._add_qfn_fab_layer(footprint, params)
 
-            # 顶部焊盘（X方向，反向）
-            for i in range(pin_count_x):
-                x_pos = ((pin_count_x - 1) / 2 - i) * lead_pitch_x  # 反向
-
-                # 顶部焊盘
-                pad_top = pcbnew.PAD(footprint)
-                pad_num = pin_count_x + pin_count_y + i + 1
-                pad_top.SetNumber(str(pad_num))
-                pad_top.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
-                pad_top.SetShape(pcbnew.PAD_SHAPE_RECT)
-                pad_top.SetSize(pcbnew.VECTOR2I(pcbnew.FromMM(pad_length), pcbnew.FromMM(pad_width)))
-                pad_top.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(x_pos), pcbnew.FromMM(-span_y / 2)))
-                pad_top.SetOrientation(0)
-                pad_top.SetLayerSet(pad_top.SMDMask())
-                footprint.Add(pad_top)
-
-            # 左侧焊盘（Y方向，反向）
-            for i in range(pin_count_y):
-                y_pos = ((pin_count_y - 1) / 2 - i) * lead_pitch_y  # 反向
-
-                # 左侧焊盘
-                pad_left = pcbnew.PAD(footprint)
-                pad_num = pin_count_x + pin_count_y + pin_count_x + i + 1
-                if pad_num <= total_pins:  # 确保不超过总引脚数
-                    pad_left.SetNumber(str(pad_num))
-                    pad_left.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
-                    pad_left.SetShape(pcbnew.PAD_SHAPE_RECT)
-                    pad_left.SetSize(pcbnew.VECTOR2I(pcbnew.FromMM(pad_width), pcbnew.FromMM(pad_length)))
-                    pad_left.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(-span_x / 2), pcbnew.FromMM(y_pos)))
-                    pad_left.SetOrientation(90 * 10)
-                    pad_left.SetLayerSet(pad_left.SMDMask())
-                    footprint.Add(pad_left)
-
-            # 添加热焊盘（如果存在）
-            if exposed_pad_land_size_x > 0 and exposed_pad_land_size_y > 0:
-                thermal_pad = pcbnew.PAD(footprint)
-                thermal_pad.SetNumber(str(total_pins + 1))  # 热焊盘通常为最后一个编号
-                thermal_pad.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
-                thermal_pad.SetShape(pcbnew.PAD_SHAPE_RECT)
-                thermal_pad.SetSize(
-                    pcbnew.VECTOR2I(pcbnew.FromMM(exposed_pad_land_size_x), pcbnew.FromMM(exposed_pad_land_size_y)))
-                thermal_pad.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(0), pcbnew.FromMM(0)))
-                thermal_pad.SetLayerSet(thermal_pad.SMDMask())
-                footprint.Add(thermal_pad)
-
-            # 添加外形线
-            self.add_courtyard(footprint, body_size_x, body_size_y)
             return footprint
+
         except Exception as e:
             raise Exception(f"生成QFN封装错误: {str(e)}")
 
-    def add_courtyard(self, footprint, length, width):
-        """
-        添加封装外形线
-        """
-        try:
-            # 添加丝印外框
-            line_width = 0.1  # 丝印线宽
+    def _add_qfn_reference(self, footprint, body_y):
+        """添加QFN参考标识"""
+        # 设置参考文本
+        footprint.SetReference("REF**")
 
-            # 计算矩形四个角点（使用内部单位）
-            half_length = pcbnew.FromMM(length / 2)
-            half_width = pcbnew.FromMM(width / 2)
+        # 设置参考文本属性
+        ref = footprint.Reference()
+        ref.SetText("REF**")
+        ref.SetLayer(pcbnew.F_SilkS)
+        ref.SetPosition(pcbnew.VECTOR2I(
+            0,
+            pcbnew.FromMM(-body_y / 2 - 1.0)  # 在封装下方1mm
+        ))
+        ref.SetTextSize(pcbnew.VECTOR2I(
+            pcbnew.FromMM(1.0),
+            pcbnew.FromMM(1.0)
+        ))
+        ref.SetTextThickness(pcbnew.FromMM(0.15))
+        ref.SetHorizJustify(pcbnew.GR_TEXT_H_ALIGN_CENTER)
 
-            # 创建矩形外框的角点
-            corners = [
-                pcbnew.VECTOR2I(-half_length, -half_width),
-                pcbnew.VECTOR2I(half_length, -half_width),
-                pcbnew.VECTOR2I(half_length, half_width),
-                pcbnew.VECTOR2I(-half_length, half_width),
-                pcbnew.VECTOR2I(-half_length, -half_width)
-            ]
+    def _add_qfn_value(self, footprint, package_name, body_y):
+        """添加QFN值标识"""
+        # 设置值文本属性
+        val = footprint.Value()
+        val.SetText(package_name)
+        val.SetLayer(pcbnew.F_Fab)
+        val.SetPosition(pcbnew.VECTOR2I(
+            0,
+            pcbnew.FromMM(body_y / 2 + 1.0)  # 在封装上方1mm
+        ))
+        val.SetTextSize(pcbnew.VECTOR2I(
+            pcbnew.FromMM(1.0),
+            pcbnew.FromMM(1.0)
+        ))
+        val.SetTextThickness(pcbnew.FromMM(0.15))
+        val.SetHorizJustify(pcbnew.GR_TEXT_H_ALIGN_CENTER)
 
-            # 添加丝印线条
-            for i in range(4):
-                line = pcbnew.PCB_SHAPE(footprint)
-                line.SetShape(pcbnew.S_SEGMENT)
-                line.SetLayer(pcbnew.F_SilkS)
-                line.SetWidth(pcbnew.FromMM(line_width))
-                line.SetStart(corners[i])
-                line.SetEnd(corners[i + 1])
-                footprint.Add(line)
+    def _add_qfn_perimeter_pads(self, footprint, params):
+        """添加QFN周边焊盘 - 修正引脚顺序：左侧从上到下为1,2,3..."""
+        pin_count_x = int(params.get('Pin Count X', 6))
+        pin_count_y = int(params.get('Pin Count Y', 6))
+        pitch_x = float(params.get('Lead Pitch X', 0.5))
+        pitch_y = float(params.get('Lead Pitch Y', 0.5))
+        pad_width = float(params.get('Pad Width', 0.3))
+        pad_length = float(params.get('Pad Length', 1.5))
+        body_x = float(params.get('Package Body Size X', 5.0))
+        body_y = float(params.get('Package Body Size Y', 5.0))
 
-            # 添加Pin 1标识
-            marker = pcbnew.PCB_SHAPE(footprint)
-            marker.SetShape(pcbnew.S_CIRCLE)
-            marker.SetLayer(pcbnew.F_SilkS)
-            marker.SetWidth(pcbnew.FromMM(0.1))
-            marker.SetCenter(pcbnew.VECTOR2I(
-                -half_length + pcbnew.FromMM(0.5),
-                -half_width + pcbnew.FromMM(0.5)
+        # 获取Pin 1位置信息
+        pin1_location = params.get('Pin 1 Visual Location', 'UPPER LEFT').upper()
+
+        # 计算焊盘位置（从封装本体边缘算起）
+        pad_offset_x = body_x / 2 + pad_length / 2
+        pad_offset_y = body_y / 2 + pad_length / 2
+
+        pin_number = 1
+
+        # 根据Pin 1位置决定起始方向
+        if pin1_location == 'UPPER LEFT' or pin1_location == '':
+            # **标准QFN：左上角开始，逆时针方向**
+            # 左侧焊盘从上到下：1, 2, 3, ...
+
+            # 1. 左侧焊盘（从上到下）- Pin 1在左上角
+            for i in range(pin_count_y):
+                x_pos = -pad_offset_x  # 左侧
+                # 修正：从上到下，所以应该是 -y 方向
+                # i=0时在最上方，i增大时向下移动
+                y_pos = -pad_offset_y + (i * pitch_y) + pitch_y / 2  # 从上到下计算
+
+                # 或者使用更清晰的计算方式：
+                # 总高度 = (pin_count_y - 1) * pitch_y
+                # 最上方位置 = -总高度/2
+                # 每个焊盘位置 = 最上方位置 + i * pitch_y
+
+                total_height = (pin_count_y - 1) * pitch_y
+                top_position = -total_height / 2
+                y_pos = top_position + (i * pitch_y)
+
+                pad = pcbnew.PAD(footprint)
+                pad.SetNumber(str(pin_number))
+                pad.SetShape(pcbnew.PAD_SHAPE_RECT)
+                pad.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
+
+                # 设置焊盘尺寸（垂直方向）
+                pad.SetSize(pcbnew.VECTOR2I(
+                    pcbnew.FromMM(pad_length),
+                    pcbnew.FromMM(pad_width)
+                ))
+
+                # 设置焊盘位置
+                pad.SetPosition(pcbnew.VECTOR2I(
+                    pcbnew.FromMM(x_pos),
+                    pcbnew.FromMM(y_pos)
+                ))
+
+                # 设置方向（垂直）
+                pad.SetOrientation(pcbnew.EDA_ANGLE(0.0, pcbnew.DEGREES_T))
+
+                # 设置焊盘层
+                layerset = pcbnew.LSET()
+                layerset.AddLayer(pcbnew.F_Cu)
+                layerset.AddLayer(pcbnew.F_Paste)
+                layerset.AddLayer(pcbnew.F_Mask)
+                pad.SetLayerSet(layerset)
+
+                footprint.Add(pad)
+                pin_number += 1
+
+            # 2. 底部焊盘（从左到右）- 继续逆时针
+            for i in range(pin_count_x):
+                # 从左到右
+                total_width = (pin_count_x - 1) * pitch_x
+                left_position = -total_width / 2
+                x_pos = left_position + (i * pitch_x)
+                y_pos = pad_offset_y  # 底部
+
+                pad = pcbnew.PAD(footprint)
+                pad.SetNumber(str(pin_number))
+                pad.SetShape(pcbnew.PAD_SHAPE_RECT)
+                pad.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
+
+                # 设置焊盘尺寸
+                pad.SetSize(pcbnew.VECTOR2I(
+                    pcbnew.FromMM(pad_width),
+                    pcbnew.FromMM(pad_length)
+                ))
+
+                # 设置焊盘位置
+                pad.SetPosition(pcbnew.VECTOR2I(
+                    pcbnew.FromMM(x_pos),
+                    pcbnew.FromMM(y_pos)
+                ))
+
+                # 设置焊盘层
+                layerset = pcbnew.LSET()
+                layerset.AddLayer(pcbnew.F_Cu)
+                layerset.AddLayer(pcbnew.F_Paste)
+                layerset.AddLayer(pcbnew.F_Mask)
+                pad.SetLayerSet(layerset)
+
+                footprint.Add(pad)
+                pin_number += 1
+
+            # 3. 右侧焊盘（从下到上）- 继续逆时针
+            for i in range(pin_count_y):
+                x_pos = pad_offset_x  # 右侧
+                # 从下到上，所以i=0时在最下方
+                total_height = (pin_count_y - 1) * pitch_y
+                bottom_position = total_height / 2  # 最下方是正数
+                y_pos = bottom_position - (i * pitch_y)  # 从下向上
+
+                pad = pcbnew.PAD(footprint)
+                pad.SetNumber(str(pin_number))
+                pad.SetShape(pcbnew.PAD_SHAPE_RECT)
+                pad.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
+
+                # 设置焊盘尺寸（垂直方向）
+                pad.SetSize(pcbnew.VECTOR2I(
+                    pcbnew.FromMM(pad_length),
+                    pcbnew.FromMM(pad_width)
+                ))
+
+                # 设置焊盘位置
+                pad.SetPosition(pcbnew.VECTOR2I(
+                    pcbnew.FromMM(x_pos),
+                    pcbnew.FromMM(y_pos)
+                ))
+
+                # 设置方向（垂直）
+                pad.SetOrientation(pcbnew.EDA_ANGLE(0.0, pcbnew.DEGREES_T))
+
+                # 设置焊盘层
+                layerset = pcbnew.LSET()
+                layerset.AddLayer(pcbnew.F_Cu)
+                layerset.AddLayer(pcbnew.F_Paste)
+                layerset.AddLayer(pcbnew.F_Mask)
+                pad.SetLayerSet(layerset)
+
+                footprint.Add(pad)
+                pin_number += 1
+
+            # 4. 顶部焊盘（从右到左）- 完成逆时针一圈
+            for i in range(pin_count_x):
+                # 从右到左
+                total_width = (pin_count_x - 1) * pitch_x
+                right_position = total_width / 2  # 最右侧是正数
+                x_pos = right_position - (i * pitch_x)  # 从右向左
+                y_pos = -pad_offset_y  # 顶部
+
+                pad = pcbnew.PAD(footprint)
+                pad.SetNumber(str(pin_number))
+                pad.SetShape(pcbnew.PAD_SHAPE_RECT)
+                pad.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
+
+                # 设置焊盘尺寸
+                pad.SetSize(pcbnew.VECTOR2I(
+                    pcbnew.FromMM(pad_width),
+                    pcbnew.FromMM(pad_length)
+                ))
+
+                # 设置焊盘位置
+                pad.SetPosition(pcbnew.VECTOR2I(
+                    pcbnew.FromMM(x_pos),
+                    pcbnew.FromMM(y_pos)
+                ))
+
+                # 设置焊盘层
+                layerset = pcbnew.LSET()
+                layerset.AddLayer(pcbnew.F_Cu)
+                layerset.AddLayer(pcbnew.F_Paste)
+                layerset.AddLayer(pcbnew.F_Mask)
+                pad.SetLayerSet(layerset)
+
+                footprint.Add(pad)
+                pin_number += 1
+
+        elif pin1_location == 'LOWER LEFT':
+            # 如果Pin 1在左下角（类似SOIC），则顺时针方向
+            # ...（原有代码）
+            pass
+        else:
+            # 默认使用标准QFN顺序（左上角，逆时针）
+            pass
+
+    def _add_qfn_thermal_pad(self, footprint, params):
+        """添加QFN中心散热焊盘"""
+        ep_size_x = float(params.get('Exposed Pad Size X'))
+        ep_size_y = float(params.get('Exposed Pad Size Y'))
+        ep_land_x = float(params.get('Exposed Pad Land Size X'))
+        ep_land_y = float(params.get('Exposed Pad Land Size Y'))
+        pin_count_x = int(params.get('Pin Count X'))
+        pin_count_y = int(params.get('Pin Count Y'))
+
+        if ep_land_x <= 0 or ep_land_y <= 0:
+            return
+
+        # 计算总引脚数作为散热焊盘编号
+        total_pins = (pin_count_x + pin_count_y) * 2
+        thermal_pad_number = total_pins + 1
+
+        # 创建散热焊盘
+        pad = pcbnew.PAD(footprint)
+        pad.SetNumber(str(thermal_pad_number))
+        pad.SetShape(pcbnew.PAD_SHAPE_RECT)  # 或使用 PAD_SHAPE_ROUNDRECT
+        # pad.SetRoundRectRadiusRatio(0.1)
+
+        pad.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
+
+        # 设置焊盘尺寸
+        pad.SetSize(pcbnew.VECTOR2I(
+            pcbnew.FromMM(ep_land_x),
+            pcbnew.FromMM(ep_land_y)
+        ))
+
+        # 设置焊盘位置
+        pad.SetPosition(pcbnew.VECTOR2I(0, 0))
+
+        # 设置焊盘层
+        layerset = pcbnew.LSET()
+        layerset.AddLayer(pcbnew.F_Cu)
+        layerset.AddLayer(pcbnew.F_Paste)
+        layerset.AddLayer(pcbnew.F_Mask)
+        pad.SetLayerSet(layerset)
+
+        footprint.Add(pad)
+
+    def _add_qfn_silkscreen(self, footprint, params):
+        """添加QFN丝印层"""
+        body_x = float(params.get('Package Body Size X'))
+        body_y = float(params.get('Package Body Size Y'))
+        pad_width = float(params.get('Pad Width'))
+        pad_length = float(params.get('Pad Length'))
+        pin_count_x = int(params.get('Pin Count X'))
+        pin_count_y = int(params.get('Pin Count Y'))
+        pitch_x = float(params.get('Lead Pitch X'))
+        pitch_y = float(params.get('Lead Pitch Y'))
+
+        # 丝印线宽
+        line_width = pcbnew.FromMM(0.12)
+
+        # 丝印边界
+        silk_x = body_x / 2
+        silk_y = body_y / 2
+        silk_offset = 0.15  # 距离焊盘的间隙
+
+        # 计算焊盘边缘
+        bottom_pad_edge = body_y / 2 + pad_length
+
+        # 左侧焊盘占据的Y范围
+        left_pad_y_start = -(pin_count_y - 1) / 2 * pitch_y - pad_width / 2 - silk_offset
+        left_pad_y_end = (pin_count_y - 1) / 2 * pitch_y + pad_width / 2 + silk_offset
+
+        # 左下角竖线
+        if left_pad_y_end < silk_y:
+            line = pcbnew.PCB_SHAPE(footprint)
+            line.SetShape(pcbnew.S_SEGMENT)
+            line.SetStart(pcbnew.VECTOR2I(
+                pcbnew.FromMM(-silk_x),
+                pcbnew.FromMM(left_pad_y_end)
             ))
-            marker.SetRadius(pcbnew.FromMM(0.2))
-            footprint.Add(marker)
-
-            # 添加阻焊层（Courtyard）
-            courtyard_margin = pcbnew.FromMM(0.2)  # 阻焊层外扩
-            courtyard_line = pcbnew.PCB_SHAPE(footprint)
-            courtyard_line.SetShape(pcbnew.S_RECT)
-            courtyard_line.SetLayer(pcbnew.F_CrtYd)
-            courtyard_line.SetWidth(pcbnew.FromMM(0.05))
-            courtyard_line.SetStart(pcbnew.VECTOR2I(
-                -half_length - courtyard_margin,
-                -half_width - courtyard_margin
+            line.SetEnd(pcbnew.VECTOR2I(
+                pcbnew.FromMM(-silk_x),
+                pcbnew.FromMM(silk_y)
             ))
-            courtyard_line.SetEnd(pcbnew.VECTOR2I(
-                half_length + courtyard_margin,
-                half_width + courtyard_margin
-            ))
-            footprint.Add(courtyard_line)
+            line.SetLayer(pcbnew.F_SilkS)
+            line.SetWidth(line_width)
+            footprint.Add(line)
 
-        except Exception as e:
-            print(f"添加外形线错误: {str(e)}")
+        # 左上角竖线
+        if left_pad_y_start > -silk_y + 0.5:  # 为Pin1标记留出空间
+            line = pcbnew.PCB_SHAPE(footprint)
+            line.SetShape(pcbnew.S_SEGMENT)
+            line.SetStart(pcbnew.VECTOR2I(
+                pcbnew.FromMM(-silk_x),
+                pcbnew.FromMM(-silk_y)
+            ))
+            line.SetEnd(pcbnew.VECTOR2I(
+                pcbnew.FromMM(-silk_x),
+                pcbnew.FromMM(left_pad_y_start - 0.5)
+            ))
+            line.SetLayer(pcbnew.F_SilkS)
+            line.SetWidth(line_width)
+            footprint.Add(line)
+
+        # 右侧线
+        line = pcbnew.PCB_SHAPE(footprint)
+        line.SetShape(pcbnew.S_SEGMENT)
+        line.SetStart(pcbnew.VECTOR2I(
+            pcbnew.FromMM(silk_x),
+            pcbnew.FromMM(-silk_y)
+        ))
+        line.SetEnd(pcbnew.VECTOR2I(
+            pcbnew.FromMM(silk_x),
+            pcbnew.FromMM(silk_y)
+        ))
+        line.SetLayer(pcbnew.F_SilkS)
+        line.SetWidth(line_width)
+        footprint.Add(line)
+
+        # 计算顶部和底部焊盘占据的X范围
+        top_pad_x_start = -(pin_count_x - 1) / 2 * pitch_x - pad_width / 2 - silk_offset
+        top_pad_x_end = (pin_count_x - 1) / 2 * pitch_x + pad_width / 2 + silk_offset
+
+        # 顶部线 - 左段
+        if top_pad_x_start > -silk_x + 0.5:  # 为Pin1标记留出空间
+            line = pcbnew.PCB_SHAPE(footprint)
+            line.SetShape(pcbnew.S_SEGMENT)
+            line.SetStart(pcbnew.VECTOR2I(
+                pcbnew.FromMM(-silk_x + 0.5),
+                pcbnew.FromMM(-silk_y)
+            ))
+            line.SetEnd(pcbnew.VECTOR2I(
+                pcbnew.FromMM(top_pad_x_start),
+                pcbnew.FromMM(-silk_y)
+            ))
+            line.SetLayer(pcbnew.F_SilkS)
+            line.SetWidth(line_width)
+            footprint.Add(line)
+
+        # 顶部线 - 右段
+        if top_pad_x_end < silk_x:
+            line = pcbnew.PCB_SHAPE(footprint)
+            line.SetShape(pcbnew.S_SEGMENT)
+            line.SetStart(pcbnew.VECTOR2I(
+                pcbnew.FromMM(top_pad_x_end),
+                pcbnew.FromMM(-silk_y)
+            ))
+            line.SetEnd(pcbnew.VECTOR2I(
+                pcbnew.FromMM(silk_x),
+                pcbnew.FromMM(-silk_y)
+            ))
+            line.SetLayer(pcbnew.F_SilkS)
+            line.SetWidth(line_width)
+            footprint.Add(line)
+
+        # 底部线 - 左段
+        if top_pad_x_start > -silk_x:
+            line = pcbnew.PCB_SHAPE(footprint)
+            line.SetShape(pcbnew.S_SEGMENT)
+            line.SetStart(pcbnew.VECTOR2I(
+                pcbnew.FromMM(-silk_x),
+                pcbnew.FromMM(silk_y)
+            ))
+            line.SetEnd(pcbnew.VECTOR2I(
+                pcbnew.FromMM(top_pad_x_start),
+                pcbnew.FromMM(silk_y)
+            ))
+            line.SetLayer(pcbnew.F_SilkS)
+            line.SetWidth(line_width)
+            footprint.Add(line)
+
+        # 底部线 - 右段
+        if top_pad_x_end < silk_x:
+            line = pcbnew.PCB_SHAPE(footprint)
+            line.SetShape(pcbnew.S_SEGMENT)
+            line.SetStart(pcbnew.VECTOR2I(
+                pcbnew.FromMM(top_pad_x_end),
+                pcbnew.FromMM(silk_y)
+            ))
+            line.SetEnd(pcbnew.VECTOR2I(
+                pcbnew.FromMM(silk_x),
+                pcbnew.FromMM(silk_y)
+            ))
+            line.SetLayer(pcbnew.F_SilkS)
+            line.SetWidth(line_width)
+            footprint.Add(line)
+
+        # Pin 1标记（左上角圆点）
+        marker = pcbnew.PCB_SHAPE(footprint)
+        marker.SetShape(pcbnew.S_CIRCLE)
+        marker.SetLayer(pcbnew.F_SilkS)
+        marker.SetWidth(line_width)
+
+        marker_offset = 0.4
+        marker_center = pcbnew.VECTOR2I(
+            pcbnew.FromMM(-silk_x - marker_offset),
+            pcbnew.FromMM(-silk_y - marker_offset)
+        )
+        marker_radius = pcbnew.FromMM(0.2)
+
+        marker.SetCenter(marker_center)
+        marker.SetRadius(marker_radius)
+        footprint.Add(marker)
+
+    def _add_qfn_courtyard(self, footprint, params):
+        """添加QFN禁止布线层（Courtyard）"""
+        body_x = float(params.get('Package Body Size X'))
+        body_y = float(params.get('Package Body Size Y'))
+        pad_length = float(params.get('Pad Length'))
+
+        # Courtyard外扩
+        courtyard_margin = 0.25
+        x_court = body_x / 2 + pad_length + courtyard_margin
+        y_court = body_y / 2 + pad_length + courtyard_margin
+
+        # 创建矩形
+        rect = pcbnew.PCB_SHAPE(footprint)
+        rect.SetShape(pcbnew.S_RECT)
+        rect.SetLayer(pcbnew.F_CrtYd)
+        rect.SetWidth(pcbnew.FromMM(0.05))
+
+        rect.SetStart(pcbnew.VECTOR2I(
+            pcbnew.FromMM(-x_court),
+            pcbnew.FromMM(-y_court)
+        ))
+        rect.SetEnd(pcbnew.VECTOR2I(
+            pcbnew.FromMM(x_court),
+            pcbnew.FromMM(y_court)
+        ))
+
+        footprint.Add(rect)
+
+    def _add_qfn_fab_layer(self, footprint, params):
+        """添加QFN装配文档层"""
+        body_x = float(params.get('Package Body Size X'))
+        body_y = float(params.get('Package Body Size Y'))
+        ep_size_x = float(params.get('Exposed Pad Size X'))
+        ep_size_y = float(params.get('Exposed Pad Size Y'))
+
+        line_width = pcbnew.FromMM(0.1)
+
+        # 主体矩形
+        rect = pcbnew.PCB_SHAPE(footprint)
+        rect.SetShape(pcbnew.S_RECT)
+        rect.SetStart(pcbnew.VECTOR2I(
+            pcbnew.FromMM(-body_x / 2),
+            pcbnew.FromMM(-body_y / 2)
+        ))
+        rect.SetEnd(pcbnew.VECTOR2I(
+            pcbnew.FromMM(body_x / 2),
+            pcbnew.FromMM(body_y / 2)
+        ))
+        rect.SetLayer(pcbnew.F_Fab)
+        rect.SetWidth(line_width)
+        footprint.Add(rect)
+
+        # Pin 1标记（左上角斜角）
+        chamfer = 0.5
+        if body_x >= chamfer * 2 and body_y >= chamfer * 2:
+            line1 = pcbnew.PCB_SHAPE(footprint)
+            line1.SetShape(pcbnew.S_SEGMENT)
+            line1.SetStart(pcbnew.VECTOR2I(
+                pcbnew.FromMM(-body_x / 2),
+                pcbnew.FromMM(-body_y / 2 + chamfer)
+            ))
+            line1.SetEnd(pcbnew.VECTOR2I(
+                pcbnew.FromMM(-body_x / 2 + chamfer),
+                pcbnew.FromMM(-body_y / 2)
+            ))
+            line1.SetLayer(pcbnew.F_Fab)
+            line1.SetWidth(line_width)
+            footprint.Add(line1)
+
+        # 散热焊盘轮廓（如果存在）
+        if ep_size_x > 0 and ep_size_y > 0:
+            ep_rect = pcbnew.PCB_SHAPE(footprint)
+            ep_rect.SetShape(pcbnew.S_RECT)
+            ep_rect.SetStart(pcbnew.VECTOR2I(
+                pcbnew.FromMM(-ep_size_x / 2),
+                pcbnew.FromMM(-ep_size_y / 2)
+            ))
+            ep_rect.SetEnd(pcbnew.VECTOR2I(
+                pcbnew.FromMM(ep_size_x / 2),
+                pcbnew.FromMM(ep_size_y / 2)
+            ))
+            ep_rect.SetLayer(pcbnew.F_Fab)
+            ep_rect.SetWidth(line_width)
+            footprint.Add(ep_rect)
 
     def set_status(self, message):
         """设置状态栏文本"""

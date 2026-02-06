@@ -998,6 +998,9 @@ class GeneratorDialog(wx.Dialog):
         # 设置表格高度
         params_grid.SetMinSize((-1, 300))
 
+        params_grid.SetDefaultEditor(wx.grid.GridCellTextEditor())
+        params_grid.EnableEditing(True)
+
         # 解析并填充参数
         package_result = package.get('packageResult', '{}')
         try:
@@ -1015,6 +1018,8 @@ class GeneratorDialog(wx.Dialog):
                 # 设置数值（可编辑）
                 params_grid.SetCellValue(row_idx, 1, str(value))
                 params_grid.SetCellBackgroundColour(row_idx, 1, wx.WHITE)
+                params_grid.SetCellEditor(row_idx, 1, wx.grid.GridCellTextEditor())
+                params_grid.SetReadOnly(row_idx, 1, False)
 
                 # 设置单位（只读）
                 unit = self.get_unit_for_param(key)
@@ -1033,6 +1038,7 @@ class GeneratorDialog(wx.Dialog):
         # 禁用行列标签的拖拽调整
         params_grid.EnableDragColSize(False)
         params_grid.EnableDragRowSize(False)
+        params_grid.EnableDragGridSize(False)
 
         sizer.Add(params_grid, 1, wx.EXPAND | wx.ALL, 10)
 
@@ -1232,10 +1238,8 @@ class GeneratorDialog(wx.Dialog):
                 return
 
             if package_type == 'SOIC':
-                # 修改这里：只传入3个参数（self被自动传递）
                 footprint = self._generate_soic_footprint(package_name, params)
             elif package_type == 'QFN':
-                # 修改这里：只传入3个参数
                 footprint = self._generate_qfn_footprint(package_name, params)
             else:
                 wx.MessageBox(f"不支持的封装类型: {package_type}", "错误", wx.OK | wx.ICON_ERROR)
@@ -1262,14 +1266,63 @@ class GeneratorDialog(wx.Dialog):
         生成SOIC封装
         """
         try:
-            # 提取SOIC参数
-            pin_count = int(params.get('Pin Count'))
-            pitch = float(params.get('Pitch'))
-            pad_length = float(params.get('Foot Length', params.get('Pad Length')))
-            pad_width = float(params.get('Lead Width', params.get('Pad Width')))
-            body_length = float(params.get('Package Body Length'))
-            body_width = float(params.get('Package Body Width'))
-            overall_width = float(params.get('Overall Width'))
+            # 提取SOIC参数，同时检查是否为有效数值
+            try:
+                pin_count = int(params.get('Pin Count', params.get('PinCount', 0)))
+                if pin_count <= 0:
+                    raise ValueError("引脚数必须大于0")
+            except (ValueError, TypeError):
+                raise ValueError("无效的引脚数参数")
+
+            try:
+                pitch = float(params.get('Pitch', 0))
+                if pitch <= 0:
+                    raise ValueError("间距必须大于0")
+            except (ValueError, TypeError):
+                raise ValueError("无效的间距参数")
+
+            try:
+                pad_width = float(params.get('Pad Width', params.get('Lead Width', params.get('LeadWidth', 0))))
+                if pad_width <= 0:
+                    raise ValueError("焊盘宽度必须大于0")
+            except (ValueError, TypeError):
+                raise ValueError("无效的焊盘宽度参数")
+
+            try:
+                pad_length = float(params.get('Pad Length', params.get('Foot Length', params.get('FootLength', 0))))
+                if pad_length <= 0:
+                    raise ValueError("焊盘长度必须大于0")
+            except (ValueError, TypeError):
+                raise ValueError("无效的焊盘长度参数")
+
+            try:
+                overall_width = float(params.get('Overall Width', params.get('OverallWidth', 0)))
+                if overall_width <= 0:
+                    raise ValueError("总宽度必须大于0")
+            except (ValueError, TypeError):
+                raise ValueError("无效的总宽度参数")
+
+            try:
+                body_length = float(params.get('Package Body Length', params.get('PackageBodyLength', 0)))
+                if body_length <= 0:
+                    raise ValueError("封装体长度必须大于0")
+            except (ValueError, TypeError):
+                raise ValueError("无效的封装体长度参数")
+
+            try:
+                body_width = float(params.get('Package Body Width', params.get('PackageBodyWidth', 0)))
+                if body_width <= 0:
+                    raise ValueError("封装体宽度必须大于0")
+            except (ValueError, TypeError):
+                raise ValueError("无效的封装体宽度参数")
+
+            # 验证引脚数为偶数
+            if pin_count % 2 != 0:
+                raise ValueError(f"SOIC封装引脚数必须是偶数，当前为{pin_count}")
+
+            # 验证焊盘长度小于总宽度
+            if pad_length >= overall_width:
+                raise ValueError(f"焊盘长度({pad_length}mm)必须小于总宽度({overall_width}mm)")
 
             # 创建封装对象
             board = pcbnew.GetBoard()
@@ -1615,22 +1668,74 @@ class GeneratorDialog(wx.Dialog):
         生成QFN封装（完整版本）
         """
         try:
-            # 提取QFN参数
-            pin_count_x = int(params.get('Pin Count X'))
-            pin_count_y = int(params.get('Pin Count Y'))
-            pad_width = float(params.get('Pad Width'))
-            pad_length = float(params.get('Pad Length'))
-            pitch_x = float(params.get('Lead Pitch X'))
-            pitch_y = float(params.get('Lead Pitch Y'))
-            body_x = float(params.get('Package Body Size X'))
-            body_y = float(params.get('Package Body Size Y'))
-            ep_size_x = float(params.get('Exposed Pad Size X'))
-            ep_size_y = float(params.get('Exposed Pad Size Y'))
-            ep_land_x = float(params.get('Exposed Pad Land Size X'))
-            ep_land_y = float(params.get('Exposed Pad Land Size Y'))
+            ep_size_x = float(params.get('Exposed Pad Size X', 0))
+            ep_size_y = float(params.get('Exposed Pad Size Y', 0))
+            ep_land_x = float(params.get('Exposed Pad Land Size X', 0))
+            ep_land_y = float(params.get('Exposed Pad Land Size Y', 0))
+
+            # 提取QFN参数，同时检查是否为有效数值
+            try:
+                pin_count_x = int(params.get('Pin Count X', params.get('PinCountX', 0)))
+                if pin_count_x <= 0:
+                    raise ValueError("X方向引脚数必须大于0")
+            except (ValueError, TypeError):
+                raise ValueError("无效的X方向引脚数参数")
+
+            try:
+                pin_count_y = int(params.get('Pin Count Y', params.get('PinCountY', 0)))
+                if pin_count_y <= 0:
+                    raise ValueError("Y方向引脚数必须大于0")
+            except (ValueError, TypeError):
+                raise ValueError("无效的Y方向引脚数参数")
+
+            try:
+                pad_width = float(params.get('Pad Width', 0))
+                if pad_width <= 0:
+                    raise ValueError("焊盘宽度必须大于0")
+            except (ValueError, TypeError):
+                raise ValueError("无效的焊盘宽度参数")
+
+            try:
+                pad_length = float(params.get('Pad Length', 0))
+                if pad_length <= 0:
+                    raise ValueError("焊盘长度必须大于0")
+            except (ValueError, TypeError):
+                raise ValueError("无效的焊盘长度参数")
+
+            try:
+                pitch_x = float(params.get('Lead Pitch X', params.get('LeadPitchX', 0)))
+                if pitch_x <= 0:
+                    raise ValueError("X方向间距必须大于0")
+            except (ValueError, TypeError):
+                raise ValueError("无效的X方向间距参数")
+
+            try:
+                pitch_y = float(params.get('Lead Pitch Y', params.get('LeadPitchY', 0)))
+                if pitch_y <= 0:
+                    raise ValueError("Y方向间距必须大于0")
+            except (ValueError, TypeError):
+                raise ValueError("无效的Y方向间距参数")
+
+            try:
+                body_x = float(params.get('Package Body Size X', params.get('PackageBodySizeX', 0)))
+                if body_x <= 0:
+                    raise ValueError("封装体X尺寸必须大于0")
+            except (ValueError, TypeError):
+                raise ValueError("无效的封装体X尺寸参数")
+
+            try:
+                body_y = float(params.get('Package Body Size Y', params.get('PackageBodySizeY', 0)))
+                if body_y <= 0:
+                    raise ValueError("封装体Y尺寸必须大于0")
+            except (ValueError, TypeError):
+                raise ValueError("无效的封装体Y尺寸参数")
 
             # 计算总引脚数
             total_pins = (pin_count_x + pin_count_y) * 2
+
+            # 验证焊盘长度
+            if pad_length <= 0 or pad_width <= 0:
+                raise ValueError("焊盘尺寸必须大于0")
 
             # 创建封装对象
             board = pcbnew.GetBoard()
@@ -1714,14 +1819,14 @@ class GeneratorDialog(wx.Dialog):
 
     def _add_qfn_perimeter_pads(self, footprint, params):
         """添加QFN周边焊盘 - 修正引脚顺序：左侧从上到下为1,2,3..."""
-        pin_count_x = int(params.get('Pin Count X', 6))
-        pin_count_y = int(params.get('Pin Count Y', 6))
-        pitch_x = float(params.get('Lead Pitch X', 0.5))
-        pitch_y = float(params.get('Lead Pitch Y', 0.5))
-        pad_width = float(params.get('Pad Width', 0.3))
-        pad_length = float(params.get('Pad Length', 1.5))
-        body_x = float(params.get('Package Body Size X', 5.0))
-        body_y = float(params.get('Package Body Size Y', 5.0))
+        pin_count_x = int(params.get('Pin Count X'))
+        pin_count_y = int(params.get('Pin Count Y'))
+        pitch_x = float(params.get('Lead Pitch X'))
+        pitch_y = float(params.get('Lead Pitch Y'))
+        pad_width = float(params.get('Pad Width'))
+        pad_length = float(params.get('Pad Length'))
+        body_x = float(params.get('Package Body Size X'))
+        body_y = float(params.get('Package Body Size Y'))
 
         # 获取Pin 1位置信息
         pin1_location = params.get('Pin 1 Visual Location', 'UPPER LEFT').upper()
@@ -1901,12 +2006,12 @@ class GeneratorDialog(wx.Dialog):
 
     def _add_qfn_thermal_pad(self, footprint, params):
         """添加QFN中心散热焊盘"""
-        ep_size_x = float(params.get('Exposed Pad Size X'))
-        ep_size_y = float(params.get('Exposed Pad Size Y'))
-        ep_land_x = float(params.get('Exposed Pad Land Size X'))
-        ep_land_y = float(params.get('Exposed Pad Land Size Y'))
-        pin_count_x = int(params.get('Pin Count X'))
-        pin_count_y = int(params.get('Pin Count Y'))
+        ep_size_x = float(params.get('Exposed Pad Size X', 0))
+        ep_size_y = float(params.get('Exposed Pad Size Y', 0))
+        ep_land_x = float(params.get('Exposed Pad Land Size X', 0))
+        ep_land_y = float(params.get('Exposed Pad Land Size Y', 0))
+        pin_count_x = int(params.get('Pin Count X', 0))
+        pin_count_y = int(params.get('Pin Count Y', 0))
 
         if ep_land_x <= 0 or ep_land_y <= 0:
             return

@@ -27,12 +27,20 @@ class FootprintGeneratorPlugin(pcbnew.ActionPlugin):
         self.icon_file_name = os.path.join(os.path.dirname(__file__), "icon.png")
 
     def Run(self):
-        """
-        插件运行入口
-        """
-        dialog = GeneratorDialog(None)
-        dialog.ShowModal()
-        dialog.Destroy()
+        if not hasattr(self, 'dialog') or self.dialog is None:
+            self.dialog = GeneratorDialog(None)
+            # 绑定窗口关闭事件，以便清理引用
+            self.dialog.Bind(wx.EVT_CLOSE, self.on_dialog_close)
+            self.dialog.Show()
+        else:
+            # 如果对话框已存在，将其带到前台
+            self.dialog.Raise()
+            self.dialog.SetFocus()
+
+    def on_dialog_close(self, event):
+        """对话框关闭时的处理"""
+        self.dialog.Destroy()
+        self.dialog = None
 
 
 class GeneratorDialog(wx.Dialog):
@@ -41,7 +49,13 @@ class GeneratorDialog(wx.Dialog):
     """
 
     def __init__(self, parent):
-        wx.Dialog.__init__(self, parent, title="AI封装生成器", size=(1400, 900))
+        wx.Dialog.__init__(self, parent, title="AI封装生成器", size=(1400, 900),
+                           style=wx.CAPTION |
+                                 wx.CLOSE_BOX |
+                                 wx.SYSTEM_MENU |
+                                 wx.MINIMIZE_BOX |
+                                 wx.FRAME_NO_TASKBAR
+                           )
 
         self.api_base_url = "http://localhost:8080/api/packages"
         self.datasheet_uuid = None
@@ -60,6 +74,7 @@ class GeneratorDialog(wx.Dialog):
         self.max_retries = 100  # 5分钟 / 3秒 = 100次
 
         self.init_ui()
+        self.Centre()
         # 绑定关闭事件
         self.Bind(wx.EVT_CLOSE, self.on_dialog_close)
 
@@ -85,6 +100,7 @@ class GeneratorDialog(wx.Dialog):
         创建左侧PDF预览面板 - 使用高质量PyMuPDF渲染
         """
         panel = wx.Panel(self)
+        panel.SetMinSize((400, -1))
         sizer = wx.BoxSizer(wx.VERTICAL)
 
         # 工具栏
@@ -1241,6 +1257,8 @@ class GeneratorDialog(wx.Dialog):
                 footprint = self._generate_soic_footprint(package_name, params)
             elif package_type == 'QFN':
                 footprint = self._generate_qfn_footprint(package_name, params)
+            elif package_type == 'BGA':
+                footprint = self._generate_bga_footprint(package_name, params)
             else:
                 wx.MessageBox(f"不支持的封装类型: {package_type}", "错误", wx.OK | wx.ICON_ERROR)
                 return
@@ -2288,6 +2306,506 @@ class GeneratorDialog(wx.Dialog):
             ep_rect.SetLayer(pcbnew.F_Fab)
             ep_rect.SetWidth(line_width)
             footprint.Add(ep_rect)
+
+    def _generate_bga_footprint(self, package_name, params):
+        """
+        生成BGA封装（完整版本）
+        """
+        try:
+            ball_diameter = float(params.get('Ball Diameter', 1.2))
+            a1_location = params.get('A1 Ball Visual Location', 'lower left').lower()
+
+            # 提取BGA参数，同时检查是否为有效数值
+            try:
+                ball_pitch_x = float(params.get('Ball Pitch X', params.get('BallPitchX', 0)))
+                if ball_pitch_x <= 0:
+                    raise ValueError("X方向球间距必须大于0")
+            except (ValueError, TypeError):
+                raise ValueError("无效的X方向球间距参数")
+
+            try:
+                ball_pitch_y = float(params.get('Ball Pitch Y', params.get('BallPitchY', 0)))
+                if ball_pitch_y <= 0:
+                    raise ValueError("Y方向球间距必须大于0")
+            except (ValueError, TypeError):
+                raise ValueError("无效的Y方向球间距参数")
+
+            try:
+                ball_count_x = int(params.get('Ball Count X', 0))
+                if ball_count_x <= 0:
+                    raise ValueError("X方向球个数必须大于0")
+            except (ValueError, TypeError):
+                raise ValueError("X方向球个数无效")
+
+            try:
+                ball_count_y = int(params.get('Ball Count Y', 0))
+                if ball_count_y <= 0:
+                    raise ValueError("Y方向球个数必须大于0")
+            except (ValueError, TypeError):
+                raise ValueError("Y方向球个数无效")
+
+            try:
+                ball_diameter = float(params.get('Ball Diameter', params.get('BallDiameter', 0)))
+                if ball_diameter <= 0:
+                    raise ValueError("球直径必须大于0")
+            except (ValueError, TypeError):
+                raise ValueError("无效的球直径参数")
+
+            try:
+                package_body_x = float(params.get('Package Body Size X',0))
+                if package_body_x <= 0:
+                    raise ValueError("X方向本体尺寸必须大于0")
+            except (ValueError, TypeError):
+                raise ValueError("X方向本体尺寸参数无效")
+
+            try:
+                package_body_y = float(params.get('Package Body Size Y',0))
+                if package_body_y <= 0:
+                    raise ValueError("Y方向本体尺寸必须大于0")
+            except (ValueError, TypeError):
+                raise ValueError("Y方向本体尺寸参数无效")
+
+            a1_location = params.get('A1 Ball Visual Location', 'lower left').lower()
+
+            board = pcbnew.GetBoard()
+            if not board:
+                raise Exception("无法获取当前板子")
+
+            footprint = pcbnew.FOOTPRINT(board)
+
+            # 设置封装ID
+            footprint.SetFPID(pcbnew.LIB_ID("", package_name))
+
+            # 设置描述和关键字
+            total_balls = ball_count_x * ball_count_y
+            footprint.SetLibDescription(
+                f"BGA, {total_balls} Ball ({ball_count_x}x{ball_count_y}), "
+                f"pitch {ball_pitch_x}mm x {ball_pitch_y}mm, "
+                f"ball dia {ball_diameter}mm, body size {package_body_x}x{package_body_y}mm"
+            )
+            footprint.SetKeywords("BGA")
+
+            # 设置参考和值
+            footprint.SetReference("U**")
+            footprint.SetValue(package_name)
+
+            # 添加参考标识
+            ref = footprint.Reference()
+            ref.SetText("REF**")
+            ref.SetLayer(pcbnew.F_SilkS)
+            ref.SetPosition(pcbnew.VECTOR2I(
+                0,
+                pcbnew.FromMM(-package_body_y / 2 - 1.5)
+            ))
+            ref.SetTextSize(pcbnew.VECTOR2I(pcbnew.FromMM(1.0), pcbnew.FromMM(1.0)))
+            ref.SetTextThickness(pcbnew.FromMM(0.15))
+            ref.SetHorizJustify(pcbnew.GR_TEXT_H_ALIGN_CENTER)
+
+            # 添加值标识
+            val = footprint.Value()
+            val.SetText(package_name)
+            val.SetLayer(pcbnew.F_Fab)
+            val.SetPosition(pcbnew.VECTOR2I(
+                0,
+                pcbnew.FromMM(package_body_y / 2 + 1.5)
+            ))
+            val.SetTextSize(pcbnew.VECTOR2I(pcbnew.FromMM(1.0), pcbnew.FromMM(1.0)))
+            val.SetTextThickness(pcbnew.FromMM(0.15))
+            val.SetHorizJustify(pcbnew.GR_TEXT_H_ALIGN_CENTER)
+
+            # 添加BGA焊盘（球）
+            self._add_bga_pads(footprint, params)
+
+            # 添加丝印层
+            self._add_bga_silkscreen(footprint, params)
+
+            # 添加禁止布线层
+            self._add_bga_courtyard(footprint, params)
+
+            # 添加装配文档层
+            self._add_bga_fab_layer(footprint, params)
+
+            return footprint
+
+        except Exception as e:
+            raise Exception(f"生成BGA封装错误: {str(e)}")
+
+    def _add_bga_pads(self, footprint, params):
+        """添加BGA焊盘（球）- 使用A1, A2, B1, B2格式编号"""
+        try:
+            ball_pitch_x = float(params.get('Ball Pitch X', 2.42))
+            ball_pitch_y = float(params.get('Ball Pitch Y', 2.42))
+            ball_count_x = int(params.get('Ball Count X', 5))
+            ball_count_y = int(params.get('Ball Count Y', 5))
+            ball_diameter = float(params.get('Ball Diameter', 1.2))
+            a1_location = params.get('A1 Ball Visual Location', 'lower left').lower()
+            ball_shape = params.get('Ball Visual Shape', 'solid circle')
+            # 计算BGA阵列的总尺寸
+            total_width_x = (ball_count_x - 1) * ball_pitch_x
+            total_width_y = (ball_count_y - 1) * ball_pitch_y
+
+            # 字母行编号（A, B, C, D, ...）
+            row_letters = []
+            for i in range(ball_count_y):
+                row_letters.append(chr(ord('A') + i))
+
+            # 确定A1球的位置并设置焊盘编号顺序
+            ball_number = 1
+
+            # 获取球形状
+            if ball_shape is None or ball_shape == '':
+                ball_shape = 'solid circle'
+            ball_shape = ball_shape.lower()
+
+            # BGA焊盘通常使用圆形
+            for row in range(ball_count_y):
+                for col in range(ball_count_x):
+                    # 根据A1位置确定行列顺序
+                    if a1_location == 'lower left':
+                        # A1在左下角：行从下到上，列从左到右
+                        actual_row = ball_count_y - 1 - row  # 从下到上
+                        actual_col = col  # 从左到右
+                        y_pos = -total_width_y / 2 + actual_row * ball_pitch_y
+                        x_pos = -total_width_x / 2 + actual_col * ball_pitch_x
+
+                        # 行字母：从下到上，所以最下面是A
+                        row_letter = row_letters[ball_count_y - 1 - row]
+                        col_number = actual_col + 1
+
+                    elif a1_location == 'upper left':
+                        # A1在左上角：行从上到下，列从左到右
+                        actual_row = row
+                        actual_col = col
+                        y_pos = -total_width_y / 2 + actual_row * ball_pitch_y
+                        x_pos = -total_width_x / 2 + actual_col * ball_pitch_x
+
+                        # 行字母：从上到下，所以最上面是A
+                        row_letter = row_letters[row]
+                        col_number = actual_col + 1
+
+                    elif a1_location == 'lower right':
+                        # A1在右下角：行从下到上，列从右到左
+                        actual_row = ball_count_y - 1 - row
+                        actual_col = ball_count_x - 1 - col
+                        y_pos = -total_width_y / 2 + actual_row * ball_pitch_y
+                        x_pos = total_width_x / 2 - actual_col * ball_pitch_x
+
+                        # 行字母：从下到上
+                        row_letter = row_letters[ball_count_y - 1 - row]
+                        col_number = ball_count_x - actual_col
+
+                    elif a1_location == 'upper right':
+                        # A1在右上角：行从上到下，列从右到左
+                        actual_row = row
+                        actual_col = ball_count_x - 1 - col
+                        y_pos = -total_width_y / 2 + actual_row * ball_pitch_y
+                        x_pos = total_width_x / 2 - actual_col * ball_pitch_x
+
+                        # 行字母：从上到下
+                        row_letter = row_letters[row]
+                        col_number = ball_count_x - actual_col
+
+                    else:
+                        # 默认使用lower left
+                        actual_row = ball_count_y - 1 - row
+                        actual_col = col
+                        y_pos = -total_width_y / 2 + actual_row * ball_pitch_y
+                        x_pos = -total_width_x / 2 + actual_col * ball_pitch_x
+
+                        row_letter = row_letters[ball_count_y - 1 - row]
+                        col_number = actual_col + 1
+
+                    # 生成球编号（例如：A1, A2, B1, B2）
+                    ball_number_str = f"{row_letter}{col_number}"
+
+                    # 创建焊盘
+                    pad = pcbnew.PAD(footprint)
+                    pad.SetNumber(ball_number_str)
+
+                    # BGA焊盘通常是圆形
+                    if 'circle' in ball_shape:
+                        pad.SetShape(pcbnew.PAD_SHAPE_CIRCLE)
+                    else:
+                        pad.SetShape(pcbnew.PAD_SHAPE_CIRCLE)  # 默认圆形
+
+                    pad.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
+
+                    # 设置焊盘尺寸（直径）
+                    pad.SetSize(pcbnew.VECTOR2I(
+                        pcbnew.FromMM(ball_diameter),
+                        pcbnew.FromMM(ball_diameter)
+                    ))
+
+                    # 设置焊盘位置
+                    pad.SetPosition(pcbnew.VECTOR2I(
+                        pcbnew.FromMM(x_pos),
+                        pcbnew.FromMM(y_pos)
+                    ))
+
+                    # 设置焊盘层 - BGA焊盘通常只需要铜层和阻焊层
+                    # 使用标准的SMD焊盘层设置
+                    pad.SetLayerSet(pad.SMDMask())
+
+                    footprint.Add(pad)
+                    ball_number += 1
+
+            print(f"已添加 {ball_number - 1} 个BGA焊盘")
+
+        except Exception as e:
+            print(f"添加BGA焊盘错误: {str(e)}")
+            raise
+
+    def _add_bga_fab_layer(self, footprint, params):
+        """添加BGA装配文档层（最内层）"""
+        try:
+            package_body_x = float(params.get('Package Body Size X', 6.25))
+            package_body_y = float(params.get('Package Body Size Y', 6.25))
+            a1_location = params.get('A1 Ball Visual Location', 'lower left').lower()
+            line_width = pcbnew.FromMM(0.1)
+
+            # 装配层就是本体尺寸（最内层）
+            x_fab = package_body_x / 2
+            y_fab = package_body_y / 2
+
+            rect = pcbnew.PCB_SHAPE(footprint)
+            rect.SetShape(pcbnew.S_RECT)
+            rect.SetStart(pcbnew.VECTOR2I(
+                pcbnew.FromMM(-x_fab),
+                pcbnew.FromMM(-y_fab)
+            ))
+            rect.SetEnd(pcbnew.VECTOR2I(
+                pcbnew.FromMM(x_fab),
+                pcbnew.FromMM(y_fab)
+            ))
+            rect.SetLayer(pcbnew.F_Fab)
+            rect.SetWidth(line_width)
+            footprint.Add(rect)
+
+            # A1标记 - 在装配层绘制斜角
+            chamfer_size = 0.5
+
+            # 根据A1位置确定标记位置
+            if a1_location == 'upper left':
+                # 左上角斜角 - 切掉左上角
+                chamfer_line = pcbnew.PCB_SHAPE(footprint)
+                chamfer_line.SetShape(pcbnew.S_SEGMENT)
+                chamfer_line.SetStart(pcbnew.VECTOR2I(
+                    pcbnew.FromMM(-x_fab),
+                    pcbnew.FromMM(-y_fab + chamfer_size)  # 从顶部向下一点
+                ))
+                chamfer_line.SetEnd(pcbnew.VECTOR2I(
+                    pcbnew.FromMM(-x_fab + chamfer_size),
+                    pcbnew.FromMM(-y_fab)  # 到顶部
+                ))
+                chamfer_line.SetLayer(pcbnew.F_Fab)
+                chamfer_line.SetWidth(line_width)
+                footprint.Add(chamfer_line)
+
+            elif a1_location == 'upper right':
+                # 右上角斜角 - 切掉右上角
+                chamfer_line = pcbnew.PCB_SHAPE(footprint)
+                chamfer_line.SetShape(pcbnew.S_SEGMENT)
+                chamfer_line.SetStart(pcbnew.VECTOR2I(
+                    pcbnew.FromMM(x_fab - chamfer_size),
+                    pcbnew.FromMM(-y_fab)  # 从顶部
+                ))
+                chamfer_line.SetEnd(pcbnew.VECTOR2I(
+                    pcbnew.FromMM(x_fab),
+                    pcbnew.FromMM(-y_fab + chamfer_size)  # 到顶部向下一点
+                ))
+                chamfer_line.SetLayer(pcbnew.F_Fab)
+                chamfer_line.SetWidth(line_width)
+                footprint.Add(chamfer_line)
+
+            elif a1_location == 'lower left':
+                # 左下角斜角 - 切掉左下角
+                chamfer_line = pcbnew.PCB_SHAPE(footprint)
+                chamfer_line.SetShape(pcbnew.S_SEGMENT)
+                chamfer_line.SetStart(pcbnew.VECTOR2I(
+                    pcbnew.FromMM(-x_fab),
+                    pcbnew.FromMM(y_fab - chamfer_size)  # 从底部向上一点
+                ))
+                chamfer_line.SetEnd(pcbnew.VECTOR2I(
+                    pcbnew.FromMM(-x_fab + chamfer_size),
+                    pcbnew.FromMM(y_fab)  # 到底部
+                ))
+                chamfer_line.SetLayer(pcbnew.F_Fab)
+                chamfer_line.SetWidth(line_width)
+                footprint.Add(chamfer_line)
+
+            elif a1_location == 'lower right':
+                # 右下角斜角 - 切掉右下角
+                chamfer_line = pcbnew.PCB_SHAPE(footprint)
+                chamfer_line.SetShape(pcbnew.S_SEGMENT)
+                chamfer_line.SetStart(pcbnew.VECTOR2I(
+                    pcbnew.FromMM(x_fab - chamfer_size),
+                    pcbnew.FromMM(y_fab)  # 从底部
+                ))
+                chamfer_line.SetEnd(pcbnew.VECTOR2I(
+                    pcbnew.FromMM(x_fab),
+                    pcbnew.FromMM(y_fab - chamfer_size)  # 到底部向上一点
+                ))
+                chamfer_line.SetLayer(pcbnew.F_Fab)
+                chamfer_line.SetWidth(line_width)
+                footprint.Add(chamfer_line)
+
+            print("已添加BGA Fab层")
+
+        except Exception as e:
+            print(f"添加BGA装配层错误: {str(e)}")
+
+    def _add_bga_silkscreen(self, footprint, params):
+        """添加BGA丝印层（中间层）"""
+        try:
+            package_body_x = float(params.get('Package Body Size X', 6.25))
+            package_body_y = float(params.get('Package Body Size Y', 6.25))
+            a1_location = params.get('A1 Ball Visual Location', 'lower left').lower()
+            # 丝印线宽
+            line_width = pcbnew.FromMM(0.12)
+
+            # 丝印边界（比Fab层稍大）
+            silk_margin = 0.2
+            silk_x = package_body_x / 2 + silk_margin
+            silk_y = package_body_y / 2 + silk_margin
+
+            # 创建完整的丝印矩形框
+            # 左侧线
+            line_left = pcbnew.PCB_SHAPE(footprint)
+            line_left.SetShape(pcbnew.S_SEGMENT)
+            line_left.SetStart(pcbnew.VECTOR2I(
+                pcbnew.FromMM(-silk_x),
+                pcbnew.FromMM(-silk_y)
+            ))
+            line_left.SetEnd(pcbnew.VECTOR2I(
+                pcbnew.FromMM(-silk_x),
+                pcbnew.FromMM(silk_y)
+            ))
+            line_left.SetLayer(pcbnew.F_SilkS)
+            line_left.SetWidth(line_width)
+            footprint.Add(line_left)
+
+            # 右侧线
+            line_right = pcbnew.PCB_SHAPE(footprint)
+            line_right.SetShape(pcbnew.S_SEGMENT)
+            line_right.SetStart(pcbnew.VECTOR2I(
+                pcbnew.FromMM(silk_x),
+                pcbnew.FromMM(-silk_y)
+            ))
+            line_right.SetEnd(pcbnew.VECTOR2I(
+                pcbnew.FromMM(silk_x),
+                pcbnew.FromMM(silk_y)
+            ))
+            line_right.SetLayer(pcbnew.F_SilkS)
+            line_right.SetWidth(line_width)
+            footprint.Add(line_right)
+
+            # 顶部线
+            line_top = pcbnew.PCB_SHAPE(footprint)
+            line_top.SetShape(pcbnew.S_SEGMENT)
+            line_top.SetStart(pcbnew.VECTOR2I(
+                pcbnew.FromMM(-silk_x),
+                pcbnew.FromMM(-silk_y)
+            ))
+            line_top.SetEnd(pcbnew.VECTOR2I(
+                pcbnew.FromMM(silk_x),
+                pcbnew.FromMM(-silk_y)
+            ))
+            line_top.SetLayer(pcbnew.F_SilkS)
+            line_top.SetWidth(line_width)
+            footprint.Add(line_top)
+
+            # 底部线
+            line_bottom = pcbnew.PCB_SHAPE(footprint)
+            line_bottom.SetShape(pcbnew.S_SEGMENT)
+            line_bottom.SetStart(pcbnew.VECTOR2I(
+                pcbnew.FromMM(-silk_x),
+                pcbnew.FromMM(silk_y)
+            ))
+            line_bottom.SetEnd(pcbnew.VECTOR2I(
+                pcbnew.FromMM(silk_x),
+                pcbnew.FromMM(silk_y)
+            ))
+            line_bottom.SetLayer(pcbnew.F_SilkS)
+            line_bottom.SetWidth(line_width)
+            footprint.Add(line_bottom)
+
+            # A1球标记 - 在丝印上标记A1位置
+            marker_offset_x = 0.3
+            marker_offset_y = 0.3
+            marker_radius = pcbnew.FromMM(0.2)
+
+            if 'lower' in a1_location:
+                y_offset = silk_y - marker_offset_y
+            else:
+                y_offset = -silk_y + marker_offset_y
+
+            if 'left' in a1_location:
+                x_offset = -silk_x + marker_offset_x
+            else:
+                x_offset = silk_x - marker_offset_x
+
+            # A1标记圆点
+            a1_marker = pcbnew.PCB_SHAPE(footprint)
+            a1_marker.SetShape(pcbnew.S_CIRCLE)
+            a1_marker.SetLayer(pcbnew.F_SilkS)
+            a1_marker.SetWidth(line_width)
+            a1_marker.SetCenter(pcbnew.VECTOR2I(
+                pcbnew.FromMM(x_offset),
+                pcbnew.FromMM(y_offset)
+            ))
+            a1_marker.SetRadius(marker_radius)
+            footprint.Add(a1_marker)
+
+            print("已添加BGA丝印层")
+
+        except Exception as e:
+            print(f"添加BGA丝印层错误: {str(e)}")
+
+    def _add_bga_courtyard(self, footprint, params):
+        """添加BGA禁止布线层（最外层）"""
+        try:
+            ball_pitch_x = float(params.get('Ball Pitch X', 2.42))
+            ball_pitch_y = float(params.get('Ball Pitch Y', 2.42))
+            ball_count_x = int(params.get('Ball Count X', 5))
+            ball_count_y = int(params.get('Ball Count Y', 5))
+            ball_diameter = float(params.get('Ball Diameter', 1.2))
+            # 计算最边缘焊盘的位置
+            total_width_x = (ball_count_x - 1) * ball_pitch_x
+            total_width_y = (ball_count_y - 1) * ball_pitch_y
+
+            # 最边缘焊盘中心位置
+            max_x = total_width_x / 2
+            max_y = total_width_y / 2
+
+            # 焊盘边缘位置（考虑焊盘半径）
+            pad_radius = ball_diameter / 2
+            courtyard_margin = 0.25  # 外扩间距
+
+            # Courtyard是最外层，要包含所有焊盘并外扩
+            x_court = max_x + pad_radius + courtyard_margin
+            y_court = max_y + pad_radius + courtyard_margin
+
+            # 创建矩形
+            rect = pcbnew.PCB_SHAPE(footprint)
+            rect.SetShape(pcbnew.S_RECT)
+            rect.SetLayer(pcbnew.F_CrtYd)
+            rect.SetWidth(pcbnew.FromMM(0.05))
+
+            rect.SetStart(pcbnew.VECTOR2I(
+                pcbnew.FromMM(-x_court),
+                pcbnew.FromMM(-y_court)
+            ))
+            rect.SetEnd(pcbnew.VECTOR2I(
+                pcbnew.FromMM(x_court),
+                pcbnew.FromMM(y_court)
+            ))
+
+            footprint.Add(rect)
+
+            print("已添加BGA Courtyard层")
+
+        except Exception as e:
+            print(f"添加BGA禁止布线层错误: {str(e)}")
 
     def set_status(self, message):
         """设置状态栏文本"""

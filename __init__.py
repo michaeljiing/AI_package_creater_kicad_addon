@@ -1088,7 +1088,7 @@ class GeneratorDialog(wx.Dialog):
         根据参数名称返回单位
         """
         param_lower = param_name.lower()
-        if any(x in param_lower for x in ['count', 'orientation', 'direction']):
+        if any(x in param_lower for x in ['count', 'orientation', 'direction', 'visual', 'index']):
             return ""
         else:
             return "mm"
@@ -1300,14 +1300,16 @@ class GeneratorDialog(wx.Dialog):
                 raise ValueError("无效的间距参数")
 
             try:
-                pad_width = float(params.get('Pad Width', params.get('Lead Width', params.get('LeadWidth', 0))))
+                #pad_width = float(params.get('Pad Width', 0))
+                pad_width = self._get_soic_pad_width(pitch, params)
                 if pad_width <= 0:
                     raise ValueError("焊盘宽度必须大于0")
             except (ValueError, TypeError):
                 raise ValueError("无效的焊盘宽度参数")
 
             try:
-                pad_length = float(params.get('Pad Length', params.get('Foot Length', params.get('FootLength', 0))))
+                #pad_length = float(params.get('Pad Length', 0))
+                pad_length = self._get_soic_pad_length(pitch, params)
                 if pad_length <= 0:
                     raise ValueError("焊盘长度必须大于0")
             except (ValueError, TypeError):
@@ -1375,6 +1377,9 @@ class GeneratorDialog(wx.Dialog):
             return footprint
 
         except Exception as e:
+            import traceback
+            with open("C:/Log/kicad_plugin_error.txt", "w") as f:
+                f.write(traceback.format_exc())
             raise Exception(f"生成SOIC封装错误: {str(e)}")
 
     def _add_soic_reference(self, footprint, body_length):
@@ -1417,12 +1422,81 @@ class GeneratorDialog(wx.Dialog):
         val.SetTextThickness(pcbnew.FromMM(0.15))
         val.SetHorizJustify(pcbnew.GR_TEXT_H_ALIGN_CENTER)
 
+    def _get_soic_pad_width(self, pitch, params):
+        """
+        获取或计算SOIC焊盘宽度
+        焊盘宽度通常为引脚间距的40%-60%
+        """
+        # 尝试从参数中获取
+        pad_width = params.get('Pad Width', params.get('Lead Width', None))
+        if pad_width is not None and pad_width != '' and float(pad_width) > 0:
+            return float(pad_width)
+
+        # 如果没有提供，根据间距计算默认值
+        # 标准SOIC焊盘宽度约为间距的50%
+        default_width = pitch * 0.5
+
+        # 限制最小和最大宽度
+        min_width = 0.2  # 最小0.2mm
+        max_width = 0.8  # 最大0.8mm
+
+        if default_width < min_width:
+            default_width = min_width
+        elif default_width > max_width:
+            default_width = max_width
+
+        print(f"焊盘宽度未指定，使用计算值: {default_width:.2f}mm (基于间距{pitch}mm)")
+        return default_width
+
+    def _get_soic_pad_length(self, pitch, params):
+        """
+        获取或计算SOIC焊盘长度
+        焊盘长度通常为引脚间距的60%-80%
+        """
+        # 尝试从参数中获取
+        pad_length = params.get('Pad Length', params.get('Foot Length', None))
+        if pad_length is not None and pad_length != '' and float(pad_length) > 0:
+            return float(pad_length)
+
+        # 如果没有提供，根据间距计算默认值
+        # 标准SOIC焊盘长度约为间距的70%
+        default_length = pitch * 0.7
+
+        # 限制最小和最大长度
+        min_length = 0.4  # 最小0.4mm
+        max_length = 1.2  # 最大1.2mm
+
+        if default_length < min_length:
+            default_length = min_length
+        elif default_length > max_length:
+            default_length = max_length
+
+        print(f"焊盘长度未指定，使用计算值: {default_length:.2f}mm (基于间距{pitch}mm)")
+        return default_length
+
+    def _get_soic_overall_width(self, pin_count, pitch, pad_length, params):
+        """
+        获取或计算SOIC总宽度（包括焊盘）
+        """
+        overall_width = params.get('Overall Width', params.get('OverallWidth', None))
+        if overall_width is not None and overall_width != '' and float(overall_width) > 0:
+            return float(overall_width)
+
+        # 如果没有提供，根据引脚数和间距计算
+        pins_per_side = pin_count // 2
+        default_width = (pins_per_side - 1) * pitch + pad_length * 2
+
+        print(f"总宽度未指定，使用计算值: {default_width:.2f}mm")
+        return default_width
+
     def _add_soic_pads(self, footprint, params):
         """添加焊盘"""
         pin_count = int(params.get('Pin Count'))
         pitch = float(params.get('Pitch'))
-        pad_width = float(params.get('Pad Width', params.get('Lead Width')))
-        pad_length = float(params.get('Pad Length', params.get('Foot Length')))
+        # pad_width = float(params.get('Pad Width', 0))
+        # pad_length = float(params.get('Pad Length', 0))
+        pad_width = self._get_soic_pad_width(pitch, params)
+        pad_length = self._get_soic_pad_length(pitch, params)
         overall_width = float(params.get('Overall Width', 6.0))
 
         # 计算行间距
@@ -1504,8 +1578,10 @@ class GeneratorDialog(wx.Dialog):
         body_length = float(params.get('Package Body Length'))
         pin_count = int(params.get('Pin Count'))
         pitch = float(params.get('Pitch'))
-        pad_width = float(params.get('Pad Width', params.get('Lead Width')))
-        pad_length = float(params.get('Pad Length', params.get('Foot Length')))
+        # pad_width = float(params.get('Pad Width', params.get('Lead Width')))
+        # pad_length = float(params.get('Pad Length', params.get('Foot Length')))
+        pad_width = self._get_soic_pad_width(pitch, params)
+        pad_length = self._get_soic_pad_length(pitch, params)
 
         # 丝印线宽
         line_width = pcbnew.FromMM(0.12)

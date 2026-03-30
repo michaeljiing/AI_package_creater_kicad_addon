@@ -57,7 +57,8 @@ class GeneratorDialog(wx.Dialog):
                                  wx.FRAME_NO_TASKBAR
                            )
 
-        self.api_base_url = "http://localhost:8080/api/packages"
+        self.api_base_url = "https://aicomplib.top/api/packages"
+        # self.api_base_url = "http://localhost:8080/api/packages"
         self.datasheet_uuid = None
         self.package_list = []  # 存储所有封装数据
         self.pdf_path = None
@@ -1293,7 +1294,7 @@ class GeneratorDialog(wx.Dialog):
                 raise ValueError("无效的引脚数参数")
 
             try:
-                pitch = float(params.get('Pitch', 0))
+                pitch = float(params.get('Lead Pitch', 0))
                 if pitch <= 0:
                     raise ValueError("间距必须大于0")
             except (ValueError, TypeError):
@@ -1454,7 +1455,7 @@ class GeneratorDialog(wx.Dialog):
         焊盘长度通常为引脚间距的60%-80%
         """
         # 尝试从参数中获取
-        pad_length = params.get('Pad Length', params.get('Foot Length', None))
+        pad_length = params.get('Pad Length', params.get('Lead Length', None))
         if pad_length is not None and pad_length != '' and float(pad_length) > 0:
             return float(pad_length)
 
@@ -1492,7 +1493,7 @@ class GeneratorDialog(wx.Dialog):
     def _add_soic_pads(self, footprint, params):
         """添加焊盘"""
         pin_count = int(params.get('Pin Count'))
-        pitch = float(params.get('Pitch'))
+        pitch = float(params.get('Lead Pitch'))
         # pad_width = float(params.get('Pad Width', 0))
         # pad_length = float(params.get('Pad Length', 0))
         pad_width = self._get_soic_pad_width(pitch, params)
@@ -1577,9 +1578,9 @@ class GeneratorDialog(wx.Dialog):
         body_width = float(params.get('Package Body Width'))
         body_length = float(params.get('Package Body Length'))
         pin_count = int(params.get('Pin Count'))
-        pitch = float(params.get('Pitch'))
+        pitch = float(params.get('Lead Pitch'))
         # pad_width = float(params.get('Pad Width', params.get('Lead Width')))
-        # pad_length = float(params.get('Pad Length', params.get('Foot Length')))
+        # pad_length = float(params.get('Pad Length', params.get('Lead Length')))
         pad_width = self._get_soic_pad_width(pitch, params)
         pad_length = self._get_soic_pad_length(pitch, params)
 
